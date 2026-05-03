@@ -112,7 +112,7 @@ func (c *Client) GetMediaInfo(id string) (*MediaInfoResult, error) {
 
 	req, _ := http.NewRequest(http.MethodGet, url, nil)
 
-	resp, err := c.generalClient.Do(req)
+	resp, err := c.mediaClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetching media info: %w", err)
 	}

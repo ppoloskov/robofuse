@@ -643,8 +643,33 @@ type OrganizerResult struct {
 func (s *Service) fetchMediaInfos(candidates []realdebrid.STRMCandidate) {
 	sem := make(chan struct{}, 3) // max 3 concurrent
 	var wg sync.WaitGroup
-	var skipped, fetched int
+	var skipped, fetched, failed int
 	var mu sync.Mutex
+
+	// Progress logging
+	start := time.Now()
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(10 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				mu.Lock()
+				f := fetched
+				sk := skipped
+				fa := failed
+				mu.Unlock()
+				s.logger.Info().
+					Int("fetched", f).
+					Int("skipped", sk).
+					Int("failed", fa).
+					Msg("RD media info progress")
+			}
+		}
+	}()
 
 	for _, c := range candidates {
 		c := c
@@ -656,7 +681,9 @@ func (s *Service) fetchMediaInfos(candidates []realdebrid.STRMCandidate) {
 		// Skip if tracking already has RD type info
 		path := s.strmService.BuildSTRMPath(c.TorrentFolder, c.Filename)
 		if ft, ok := s.strmService.GetTracking(path); ok && ft.RDType != "" {
+			mu.Lock()
 			skipped++
+			mu.Unlock()
 			continue
 		}
 
@@ -668,10 +695,16 @@ func (s *Service) fetchMediaInfos(candidates []realdebrid.STRMCandidate) {
 
 			info, err := s.rd.GetMediaInfo(dl.ID)
 			if err != nil {
+				mu.Lock()
+				failed++
+				mu.Unlock()
 				s.logger.Debug().Err(err).Str("id", dl.ID).Msg("RD media info fetch failed")
 				return
 			}
 			if info == nil {
+				mu.Lock()
+				failed++
+				mu.Unlock()
 				return
 			}
 
@@ -689,13 +722,14 @@ func (s *Service) fetchMediaInfos(candidates []realdebrid.STRMCandidate) {
 	}
 
 	wg.Wait()
+	close(done)
 
-	if fetched > 0 || skipped > 0 {
-		s.logger.Info().
-			Int("fetched", fetched).
-			Int("skipped", skipped).
-			Msg("RD media info sync")
-	}
+	s.logger.Info().
+		Int("fetched", fetched).
+		Int("skipped", skipped).
+		Int("failed", failed).
+		Dur("elapsed", time.Since(start).Round(time.Second)).
+		Msg("RD media info sync complete")
 }
 
 // runOrganizer executes the Go organizer to organize files using ptt-go.
