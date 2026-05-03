@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/robofuse/robofuse/internal/config"
@@ -336,20 +337,34 @@ type missingLink struct {
 	link    string
 }
 
-// unrestrictLinks unrestricts multiple links concurrently
+// unrestrictLinks unrestricts multiple links concurrently.
+// Implements a circuit breaker: when consecutive 503/429 errors exceed
+// a threshold, all workers pause briefly to let the server recover,
+// preventing self-inflicted thundering herds.
 func (s *Service) unrestrictLinks(links []missingLink, dryRun bool) ([]*realdebrid.Download, []string, int) {
 	if dryRun {
 		s.logger.Info().Int("count", len(links)).Msg("[DRY-RUN] Would unrestrict links")
 		return nil, nil, 0
 	}
 
+	const (
+		// Circuit breaker: if this many consecutive errors occur across workers,
+		// pause all new requests to let the server recover.
+		circuitBreakerThreshold = 10
+		circuitCooldown         = 30 * time.Second
+	)
+
 	var mu sync.Mutex
 	var results []*realdebrid.Download
 	var failed []string
 	completed := 0
 	queued := 0
-	var progress *console.ProgressBar
 
+	// Circuit breaker state: atomically tracked consecutive errors and cooldown deadline.
+	var consecutiveErrors atomic.Int64
+	var cooldownUntil atomic.Int64 // unix timestamp, 0 = not in cooldown
+
+	var progress *console.ProgressBar
 	if logger.IsInfoEnabled() && logger.IsTTY() && !logger.IsDebugEnabled() {
 		progress = console.NewProgressBar("Unrestricting links", len(links))
 		progress.Update(0)
@@ -360,6 +375,17 @@ func (s *Service) unrestrictLinks(links []missingLink, dryRun bool) ([]*realdebr
 	for _, ml := range links {
 		ml := ml // capture
 		pool.Submit(func() {
+			// --- Circuit breaker: check if we're in cooldown ---
+			if cd := cooldownUntil.Load(); cd > 0 {
+				remaining := time.Until(time.Unix(cd, 0))
+				if remaining > 0 {
+					s.logger.Warn().
+						Dur("remaining", remaining).
+						Msg("Circuit breaker open, pausing before request")
+					time.Sleep(remaining)
+				}
+			}
+
 			download, err := s.rd.UnrestrictLink(ml.link)
 
 			mu.Lock()
@@ -367,14 +393,28 @@ func (s *Service) unrestrictLinks(links []missingLink, dryRun bool) ([]*realdebr
 
 			completed++
 			if err != nil {
-				// Check if it's a retryable error (503, 502, 504)
+				// Track consecutive errors for circuit breaker
 				if isRetryableError(err) {
+					consec := consecutiveErrors.Add(1)
+					if consec >= circuitBreakerThreshold {
+						cd := time.Now().Add(circuitCooldown).Unix()
+						if cooldownUntil.Swap(cd) == 0 {
+							s.logger.Warn().
+								Int64("consecutive_errors", consec).
+								Dur("cooldown", circuitCooldown).
+								Msg("Circuit breaker tripped — too many consecutive server errors, pausing all workers")
+						}
+					}
+
 					// Add to retry queue for next cycle
 					s.addToRetryQueue(ml.link, ml.torrent, err)
 					queued++
 					s.logger.Debug().
 						Str("filename", ml.torrent.Filename).
 						Msg("Added to retry queue (retryable error)")
+				} else {
+					// Non-retryable error resets the circuit
+					consecutiveErrors.Store(0)
 				}
 
 				failed = append(failed, ml.link)
@@ -382,6 +422,8 @@ func (s *Service) unrestrictLinks(links []missingLink, dryRun bool) ([]*realdebr
 					s.logger.Debug().Err(err).Msg("Failed to unrestrict link")
 				}
 			} else {
+				// Success resets the circuit breaker
+				consecutiveErrors.Store(0)
 				results = append(results, download)
 			}
 

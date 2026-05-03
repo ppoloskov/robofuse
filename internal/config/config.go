@@ -50,7 +50,7 @@ func defaults() *Config {
 		OutputDir:          "./library",
 		OrganizedDir:       "./library-organized",
 		CacheDir:           "./cache",
-		ConcurrentRequests: 32,
+		ConcurrentRequests: 10,
 		GeneralRateLimit:   60,
 		TorrentsRateLimit:  25,
 		WatchMode:          false,
@@ -121,7 +121,7 @@ func (c *Config) Validate() error {
 	}
 
 	if c.ConcurrentRequests < 1 {
-		c.ConcurrentRequests = 32
+		c.ConcurrentRequests = 10
 	}
 
 	if c.GeneralRateLimit < 1 {

@@ -107,12 +107,14 @@ func isRetryableError(err error) bool {
 		// Check for retryable status codes
 		if httpErr.StatusCode == http.StatusServiceUnavailable ||
 			httpErr.StatusCode == http.StatusBadGateway ||
-			httpErr.StatusCode == http.StatusGatewayTimeout {
+			httpErr.StatusCode == http.StatusGatewayTimeout ||
+			httpErr.StatusCode == http.StatusTooManyRequests {
 			return true
 		}
 
-		// Check for special retry code from dual retry strategy
-		if httpErr.Code == "server_unavailable_retryable" {
+		// Check for special retry sentinel codes from UnrestrictLink's retry exhaustion
+		if httpErr.Code == "server_unavailable_retryable" ||
+			httpErr.Code == "rate_limit_retryable" {
 			return true
 		}
 	}
@@ -125,11 +127,29 @@ func (s *Service) addToRetryQueue(link string, torrent *realdebrid.Torrent, err 
 		return // Don't queue non-retryable errors
 	}
 
+	// Derive error type from the actual error
+	errorType := "503"
+	var httpErr *request.HTTPError
+	if errors.As(err, &httpErr) {
+		switch {
+		case httpErr.StatusCode == http.StatusTooManyRequests:
+			errorType = "429"
+		case httpErr.Code == "rate_limit_retryable":
+			errorType = "429"
+		case httpErr.StatusCode == http.StatusBadGateway:
+			errorType = "502"
+		case httpErr.StatusCode == http.StatusGatewayTimeout:
+			errorType = "504"
+		default:
+			errorType = "503"
+		}
+	}
+
 	s.retryQueue.Add(
 		link,
 		torrent.ID,
 		torrent.Filename,
-		"503", // Error type
+		errorType,
 		err.Error(),
 	)
 }

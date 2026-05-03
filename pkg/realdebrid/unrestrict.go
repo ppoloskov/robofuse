@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	gourl "net/url"
 	"strings"
@@ -15,14 +16,16 @@ import (
 // unrestrict.go handles link unrestriction and retry behavior.
 
 // UnrestrictLink unrestricts a Real-Debrid link with dual retry strategy
-// - 503 errors: 2 immediate retries with 10s delay, then queue for next cycle
-// - 429 errors: 3 immediate retries with exponential backoff (2s, 4s, 8s)
+// - 503 errors: 3 immediate retries with exponential backoff + jitter (2s, 4s, 8s), then queue for next cycle
+// - 429 errors: 4 immediate retries with exponential backoff + jitter (2s, 4s, 8s, 16s), then queue for next cycle
 // - Other errors: fail immediately
+//
+// Jitter (±25%) prevents thundering herds when multiple workers retry simultaneously.
 func (c *Client) UnrestrictLink(link string) (*Download, error) {
 	const (
-		max503Retries     = 2 // Server error immediate retries
-		max429Retries     = 3 // Rate limit immediate retries
-		retry503Delay     = 10 * time.Second
+		max503Retries     = 3  // Server error immediate retries
+		max429Retries     = 4  // Rate limit immediate retries
+		retry503BaseDelay = 2 * time.Second
 		retry429BaseDelay = 2 * time.Second
 	)
 
@@ -70,21 +73,25 @@ func (c *Client) UnrestrictLink(link string) (*Download, error) {
 			return result.ToDownload(), nil
 
 		case http.StatusServiceUnavailable:
-			// 503 Server Unavailable - immediate retry with 10s delay
+			// 503 Server Unavailable - exponential backoff with jitter
 			attempt503++
 			if attempt503 <= max503Retries {
+				// Exponential backoff: 2s, 4s, 8s with ±25% jitter
+				delay := retry503BaseDelay * time.Duration(1<<uint(attempt503-1))
+				jitter := time.Duration(rand.Int63n(int64(delay / 4)))
+				sleepTime := delay + jitter
 				c.logger.Warn().
 					Int("attempt", attempt503).
-					Dur("delay", retry503Delay).
-					Msg("Server unavailable (503), retrying immediately")
-				time.Sleep(retry503Delay)
-				continue // ← Retry immediately
+					Dur("delay", sleepTime).
+					Msg("Server unavailable (503), backing off with jitter")
+				time.Sleep(sleepTime)
+				continue
 			}
 
 			// Max immediate retries exceeded - return special error for queue
 			c.logger.Warn().
 				Int("attempts", attempt503).
-				Msg("Server unavailable after immediate retries, will queue for next cycle")
+				Msg("Server unavailable after retries, will queue for next cycle")
 			return nil, &request.HTTPError{
 				StatusCode: http.StatusServiceUnavailable,
 				Message:    "server unavailable after retries",
@@ -92,27 +99,29 @@ func (c *Client) UnrestrictLink(link string) (*Download, error) {
 			}
 
 		case http.StatusTooManyRequests:
-			// 429 Rate Limit - immediate retry with exponential backoff
+			// 429 Rate Limit - exponential backoff with jitter, then queue
 			attempt429++
 			if attempt429 <= max429Retries {
-				// Exponential backoff: 2s, 4s, 8s
+				// Exponential backoff: 2s, 4s, 8s, 16s with ±25% jitter
 				delay := retry429BaseDelay * time.Duration(1<<uint(attempt429-1))
+				jitter := time.Duration(rand.Int63n(int64(delay / 4)))
+				sleepTime := delay + jitter
 				c.logger.Warn().
 					Int("attempt", attempt429).
-					Dur("delay", delay).
-					Msg("Rate limit (429), backing off")
-				time.Sleep(delay)
-				continue // ← Retry immediately
+					Dur("delay", sleepTime).
+					Msg("Rate limit (429), backing off with jitter")
+				time.Sleep(sleepTime)
+				continue
 			}
 
-			// Max retries exceeded - fail permanently (don't queue)
-			c.logger.Error().
+			// Max retries exceeded - queue for next cycle (don't fail permanently)
+			c.logger.Warn().
 				Int("attempts", attempt429).
-				Msg("Rate limit exceeded after all retries")
+				Msg("Rate limit exceeded after retries, will queue for next cycle")
 			return nil, &request.HTTPError{
 				StatusCode: http.StatusTooManyRequests,
-				Message:    "rate limit exceeded",
-				Code:       "rate_limit_exceeded",
+				Message:    "rate limit exceeded after retries",
+				Code:       "rate_limit_retryable",
 			}
 
 		default:
