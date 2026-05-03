@@ -770,41 +770,84 @@ func (s *Service) fetchMediaInfos(candidates []realdebrid.STRMCandidate) {
 		Msg("RD media info sync complete")
 }
 
-// matchTMDB searches TMDB for each candidate to get official titles and metadata.
-// Skips candidates that already have a TMDB match in tracking.
+// matchTMDB searches TMDB at the torrent level — once per torrent folder —
+// then applies the match to all candidates within that torrent. This prevents
+// episode filenames from being searched individually (which returns garbage
+// like specials/movies instead of the actual series).
 func (s *Service) matchTMDB(candidates []realdebrid.STRMCandidate) {
 	var matched, skipped, unmatched int
 	start := time.Now()
 
+	// Group candidates by torrent folder
+	type group struct {
+		folder     string
+		candidates []realdebrid.STRMCandidate
+	}
+	groups := make(map[string]*group)
 	for _, c := range candidates {
-		path := s.strmService.BuildSTRMPath(c.TorrentFolder, c.Filename)
+		key := c.TorrentFolder
+		g, ok := groups[key]
+		if !ok {
+			g = &group{folder: key}
+			groups[key] = g
+		}
+		g.candidates = append(g.candidates, c)
+	}
 
-		// Skip if already matched
-		if ft, ok := s.strmService.GetTracking(path); ok && ft.TMDBID != 0 {
-			skipped++
+	for _, g := range groups {
+		// Check if any candidate in this group already has a TMDB match
+		allMatched := true
+		anyMatched := false
+		for _, c := range g.candidates {
+			path := s.strmService.BuildSTRMPath(c.TorrentFolder, c.Filename)
+			if ft, ok := s.strmService.GetTracking(path); ok && ft.TMDBID != 0 {
+				anyMatched = true
+			} else {
+				allMatched = false
+			}
+		}
+		if allMatched {
+			skipped += len(g.candidates)
 			continue
 		}
+		if anyMatched {
+			// Partial match — some files already matched, others not.
+			// This shouldn't happen in normal operation. Match the unmatched ones.
+		}
 
-		// Determine type and search terms
+		// Parse folder name for search terms
+		folderParsed := ptt.Parse(filepath.Base(g.folder))
+		searchTitle := folderParsed.Title
+		if searchTitle == "" {
+			searchTitle = filepath.Base(g.folder)
+		}
+		searchYear := folderParsed.Year
+
+		// Determine type: if the folder or any file has season/episode → show
 		mediaType := "movie"
-		searchTitle := c.TorrentFolder // use torrent folder as primary search
-		searchYear := 0
-
-		if ft, ok := s.strmService.GetTracking(path); ok {
-			// Use RD classification if available
-			if ft.RDType == "show" {
-				mediaType = "show"
+		if len(folderParsed.Seasons) > 0 || len(folderParsed.Episodes) > 0 || folderParsed.Anime {
+			mediaType = "show"
+		} else {
+			// Check first candidate's filename
+			for _, c := range g.candidates {
+				fn := strings.TrimSuffix(c.Filename, filepath.Ext(c.Filename))
+				p := ptt.Parse(fn)
+				if len(p.Seasons) > 0 || len(p.Episodes) > 0 || p.Anime {
+					mediaType = "show"
+					break
+				}
 			}
 		}
 
-		// Parse title from PTT for better search terms
-		filenameNoExt := strings.TrimSuffix(c.Filename, filepath.Ext(c.Filename))
-		parsed := ptt.Parse(filenameNoExt)
-		if parsed.Title != "" {
-			searchTitle = parsed.Title
-		}
-		if parsed.Year > 0 {
-			searchYear = parsed.Year
+		// Also check RD classification for any candidate
+		if mediaType == "movie" {
+			for _, c := range g.candidates {
+				path := s.strmService.BuildSTRMPath(c.TorrentFolder, c.Filename)
+				if ft, ok := s.strmService.GetTracking(path); ok && ft.RDType == "show" {
+					mediaType = "show"
+					break
+				}
+			}
 		}
 
 		match, err := s.tmdbClient.Match(mediaType, searchTitle, searchYear)
@@ -814,7 +857,7 @@ func (s *Service) matchTMDB(candidates []realdebrid.STRMCandidate) {
 				Str("search_title", searchTitle).
 				Str("type", mediaType).
 				Msg("TMDB match error")
-			unmatched++
+			unmatched += len(g.candidates)
 			continue
 		}
 		if match == nil {
@@ -823,17 +866,22 @@ func (s *Service) matchTMDB(candidates []realdebrid.STRMCandidate) {
 				Str("type", mediaType).
 				Int("year", searchYear).
 				Msg("TMDB no match found")
-			unmatched++
+			unmatched += len(g.candidates)
 			continue
 		}
 
-		s.strmService.SetTMDBMatch(path, match)
-		matched++
+		// Apply match to all candidates in this group
+		for _, c := range g.candidates {
+			path := s.strmService.BuildSTRMPath(c.TorrentFolder, c.Filename)
+			s.strmService.SetTMDBMatch(path, match)
+		}
+		matched += len(g.candidates)
 
 		s.logger.Info().
-			Str("path", path).
+			Str("folder", g.folder).
 			Str("tmdb_title", match.Title).
 			Int("tmdb_id", match.TMDBID).
+			Int("files", len(g.candidates)).
 			Msg("TMDB match found")
 	}
 
