@@ -367,6 +367,13 @@ func (s *Service) unrestrictLinks(links []missingLink, dryRun bool) ([]*realdebr
 	completed := 0
 	queued := 0
 
+	// Per-torrent tracking for auto-repair decisions
+	type torrentStats struct {
+		attempted int
+		code1924  int // failed with RD error code 19 or 24 (torrent data purged/nerfed)
+	}
+	torrentAttempts := make(map[string]*torrentStats) // torrentID → stats
+
 	// Circuit breaker state: atomically tracked consecutive errors and cooldown deadline.
 	var consecutiveErrors atomic.Int64
 	var cooldownUntil atomic.Int64 // unix timestamp, 0 = not in cooldown
@@ -400,6 +407,20 @@ func (s *Service) unrestrictLinks(links []missingLink, dryRun bool) ([]*realdebr
 
 			completed++
 			if err != nil {
+				// Track per-torrent failures for auto-repair decisions
+				if ml.torrent != nil && ml.torrent.ID != "" {
+					ts, ok := torrentAttempts[ml.torrent.ID]
+					if !ok {
+						ts = &torrentStats{}
+						torrentAttempts[ml.torrent.ID] = ts
+					}
+					ts.attempted++
+					var httpErr *request.HTTPError
+					if errors.As(err, &httpErr) && httpErr.RDErrorCode == 19 {
+						ts.code1924++
+					}
+				}
+
 				// Track consecutive errors for circuit breaker
 				if isRetryableError(err) {
 					consec := consecutiveErrors.Add(1)
@@ -454,6 +475,34 @@ func (s *Service) unrestrictLinks(links []missingLink, dryRun bool) ([]*realdebr
 	}
 
 	pool.Wait()
+
+	// Auto-repair: if repair_torrents is enabled, repair torrents where
+	// ALL attempted links failed with RD error code 19 (torrent data not cached).
+	// Re-adding the magnet causes RD to re-download and re-cache the torrent.
+	if !dryRun && s.config.RepairTorrents && len(torrentAttempts) > 0 {
+		var repairCandidates []*realdebrid.Torrent
+		for torrentID, stats := range torrentAttempts {
+			if stats.attempted > 0 && stats.attempted == stats.code1924 {
+				for _, ml := range links {
+					if ml.torrent != nil && ml.torrent.ID == torrentID {
+						repairCandidates = append(repairCandidates, ml.torrent)
+						break
+					}
+				}
+			}
+		}
+		if len(repairCandidates) > 0 {
+			s.logger.Info().
+				Int("count", len(repairCandidates)).
+				Msg("Auto-repairing torrents with code 19 failures (torrent data not cached)")
+			repaired, _ := s.repairService.RepairTorrents(repairCandidates, dryRun)
+			if repaired > 0 {
+				s.logger.Info().
+					Int("repaired", repaired).
+					Msg("Torrents repaired — re-added magnets for re-caching")
+			}
+		}
+	}
 
 	// Save retry queue if any items were added
 	if !dryRun && s.retryQueue.Count() > 0 {

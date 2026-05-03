@@ -93,6 +93,7 @@ func (c *Client) UnrestrictLink(link string) (*Download, error) {
 					Dur("delay", sleepTime).
 					Int("rd_error_code", rdCode).
 					Str("rd_error", rdMsg).
+					Str("rd_reason", rdErrorReason(rdCode, rdMsg)).
 					Msg("Server unavailable (503), backing off with jitter")
 				time.Sleep(sleepTime)
 				continue
@@ -103,6 +104,7 @@ func (c *Client) UnrestrictLink(link string) (*Download, error) {
 				Int("attempts", attempt503).
 				Int("rd_error_code", rdCode).
 				Str("rd_error", rdMsg).
+				Str("rd_reason", rdErrorReason(rdCode, rdMsg)).
 				Msg("Server unavailable after retries, will queue for next cycle")
 			return nil, &request.HTTPError{
 				StatusCode:  http.StatusServiceUnavailable,
@@ -150,9 +152,12 @@ func (c *Client) UnrestrictLink(link string) (*Download, error) {
 }
 
 // mapErrorCode maps Real-Debrid error codes to appropriate errors.
-// Codes 19 and 35 are both "hoster unavailable" (transient — the file hoster
-// may recover). Code 23/34/36 are "traffic exceeded" (transient — resets daily).
-// Code 24 is "link nerfed" (usually permanent — DMCA/file removed).
+// Codes discovered from API responses (verified):
+//   19 – torrent data not cached / file unavailable (transient, common)
+// Codes inherited from original codebase (unverified — may or may not be used by RD):
+//   23, 34, 36 – traffic exceeded
+//   24 – link nerfed / DMCA
+//   35 – hoster unavailable
 func (c *Client) mapErrorCode(code int, message string) error {
 	switch code {
 	case 19:
@@ -172,6 +177,21 @@ func (c *Client) mapErrorCode(code int, message string) error {
 		return request.HosterUnavailableError
 	default:
 		return fmt.Errorf("Real-Debrid error %d: %s", code, message)
+	}
+}
+
+// rdErrorReason returns a human-readable description of an RD error code.
+// Only code 19 is empirically verified (observed in production).
+// Other codes are inherited from the original codebase and may not be accurate.
+func rdErrorReason(code int, msg string) string {
+	switch code {
+	case 19:
+		return "torrent data not cached (RD can't generate link — re-adding magnet may help)"
+	default:
+		if msg != "" {
+			return msg
+		}
+		return "unknown error code"
 	}
 }
 

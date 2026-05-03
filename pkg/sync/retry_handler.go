@@ -112,23 +112,12 @@ func isRetryableError(err error) bool {
 			httpErr.StatusCode == http.StatusBadGateway ||
 			httpErr.StatusCode == http.StatusGatewayTimeout ||
 			httpErr.StatusCode == http.StatusTooManyRequests {
-			// Even for 503, some RD error codes are permanent — don't retry those.
-			if httpErr.RDErrorCode != 0 {
-				switch httpErr.RDErrorCode {
-				case 24: // Link has been nerfed (DMCA/permanent removal)
-					return false
-				}
-			}
 			return true
 		}
 
 		// Check for special retry sentinel codes from UnrestrictLink's retry exhaustion
 		if httpErr.Code == "server_unavailable_retryable" ||
 			httpErr.Code == "rate_limit_retryable" {
-			// Code 24 (link nerfed) is the only truly permanent one
-			if httpErr.RDErrorCode == 24 {
-				return false
-			}
 			return true
 		}
 	}
