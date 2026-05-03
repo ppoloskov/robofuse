@@ -48,6 +48,9 @@ type Config struct {
 	// Content filtering
 	ExcludeKeywordsFile string `json:"exclude_keywords_file"` // path to file with one keyword per line (case-insensitive)
 
+	// TMDB integration
+	TMDBAPIKey string `json:"tmdb_api_key"` // TheMovieDB API v3 key for metadata + renaming
+
 	// Internal
 	Path string `json:"-"` // Config file path
 }

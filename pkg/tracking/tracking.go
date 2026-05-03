@@ -9,6 +9,7 @@ import (
 	"github.com/robofuse/robofuse/internal/logger"
 	"github.com/robofuse/robofuse/pkg/probe"
 	"github.com/robofuse/robofuse/pkg/realdebrid"
+	"github.com/robofuse/robofuse/pkg/tmdb"
 	"github.com/rs/zerolog"
 )
 
@@ -33,6 +34,18 @@ type FileTracking struct {
 	RDBitrate      int     `json:"rd_bitrate,omitempty"`
 	RDPosterPath   string  `json:"rd_poster_path,omitempty"`   // poster image URL
 	RDBackdropPath string  `json:"rd_backdrop_path,omitempty"` // backdrop image URL
+
+	// TMDB match (from themoviedb.org)
+	TMDBID        int      `json:"tmdb_id,omitempty"`
+	TMDBTitle     string   `json:"tmdb_title,omitempty"`      // official title
+	TMDBType      string   `json:"tmdb_type,omitempty"`       // "movie" or "show"
+	TMDBYear      int      `json:"tmdb_year,omitempty"`
+	TMDBOverview  string   `json:"tmdb_overview,omitempty"`
+	TMDBPoster    string   `json:"tmdb_poster,omitempty"`
+	TMDBBackdrop  string   `json:"tmdb_backdrop,omitempty"`
+	TMDBRating    float64  `json:"tmdb_rating,omitempty"`
+	TMDBGenres    []string `json:"tmdb_genres,omitempty"`
+	TMDBNFOGenerated bool  `json:"tmdb_nfo_generated,omitempty"` // NFO enriched with TMDB data
 }
 
 // Service manages file tracking persistence
@@ -174,6 +187,36 @@ func (s *Service) SetRDInfo(relativePath string, info *realdebrid.MediaInfoResul
 		Str("path", relativePath).
 		Str("rd_type", info.Type).
 		Msg("Stored RD media info")
+}
+
+// SetTMDBMatch stores TMDB match result for a tracked file.
+func (s *Service) SetTMDBMatch(relativePath string, match *tmdb.MatchResult) {
+	if match == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	entry, exists := s.data[relativePath]
+	if !exists {
+		return
+	}
+
+	entry.TMDBID = match.TMDBID
+	entry.TMDBTitle = match.Title
+	entry.TMDBType = match.Type
+	entry.TMDBYear = match.Year
+	entry.TMDBOverview = match.Overview
+	entry.TMDBPoster = match.PosterPath
+	entry.TMDBBackdrop = match.BackdropPath
+	entry.TMDBRating = match.VoteAverage
+	entry.TMDBGenres = match.Genres
+
+	s.logger.Debug().
+		Str("path", relativePath).
+		Str("tmdb_title", match.Title).
+		Int("tmdb_id", match.TMDBID).
+		Msg("Stored TMDB match")
 }
 
 // MovePath re-keys a tracking entry from oldPath to newPath.

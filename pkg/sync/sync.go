@@ -3,10 +3,13 @@ package sync
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	ptt "github.com/itsrenoria/ptt-go"
 	"github.com/robofuse/robofuse/internal/config"
 	"github.com/robofuse/robofuse/internal/console"
 	"github.com/robofuse/robofuse/internal/logger"
@@ -16,6 +19,7 @@ import (
 	"github.com/robofuse/robofuse/pkg/repair"
 	"github.com/robofuse/robofuse/pkg/retry"
 	"github.com/robofuse/robofuse/pkg/strm"
+	"github.com/robofuse/robofuse/pkg/tmdb"
 	"github.com/robofuse/robofuse/pkg/worker"
 	"github.com/rs/zerolog"
 )
@@ -30,6 +34,7 @@ type Service struct {
 	retryQueue    *retry.Queue
 	config        *config.Config
 	logger        zerolog.Logger
+	tmdbClient    *tmdb.Client // nil if TMDB not configured
 	// Reusable allocations for watch mode
 	downloadMap map[string]*realdebrid.Download
 	candidates  []realdebrid.STRMCandidate
@@ -39,7 +44,7 @@ type Service struct {
 func New(cfg *config.Config) *Service {
 	rd := realdebrid.New(cfg)
 
-	return &Service{
+	svc := &Service{
 		rd:            rd,
 		repairService: repair.New(rd, cfg),
 		strmService:   strm.New(cfg),
@@ -49,6 +54,13 @@ func New(cfg *config.Config) *Service {
 		downloadMap:   make(map[string]*realdebrid.Download),
 		candidates:    make([]realdebrid.STRMCandidate, 0, 1024),
 	}
+
+	if cfg.TMDBAPIKey != "" {
+		svc.tmdbClient = tmdb.New(cfg.TMDBAPIKey)
+		svc.logger.Info().Msg("TMDB client initialized")
+	}
+
+	return svc
 }
 
 // RunResult contains the results of a sync run
@@ -200,6 +212,11 @@ func (s *Service) Run(dryRun bool) (*RunResult, error) {
 	// Step 7b: Fetch RD media info for classification (async, bounded)
 	if !dryRun {
 		s.fetchMediaInfos(s.candidates)
+	}
+
+	// Step 7c: Match against TMDB for official titles and metadata
+	if !dryRun && s.tmdbClient != nil {
+		s.matchTMDB(s.candidates)
 	}
 
 	// Step 8: Sync STRM files
@@ -730,6 +747,71 @@ func (s *Service) fetchMediaInfos(candidates []realdebrid.STRMCandidate) {
 		Int("failed", failed).
 		Dur("elapsed", time.Since(start).Round(time.Second)).
 		Msg("RD media info sync complete")
+}
+
+// matchTMDB searches TMDB for each candidate to get official titles and metadata.
+// Skips candidates that already have a TMDB match in tracking.
+func (s *Service) matchTMDB(candidates []realdebrid.STRMCandidate) {
+	var matched, skipped int
+	start := time.Now()
+
+	for _, c := range candidates {
+		path := s.strmService.BuildSTRMPath(c.TorrentFolder, c.Filename)
+
+		// Skip if already matched
+		if ft, ok := s.strmService.GetTracking(path); ok && ft.TMDBID != 0 {
+			skipped++
+			continue
+		}
+
+		// Determine type and search terms
+		mediaType := "movie"
+		searchTitle := c.TorrentFolder // use torrent folder as primary search
+		searchYear := 0
+
+		if ft, ok := s.strmService.GetTracking(path); ok {
+			// Use RD classification if available
+			if ft.RDType == "show" {
+				mediaType = "show"
+			}
+		}
+
+		// Parse title from PTT for better search terms
+		filenameNoExt := strings.TrimSuffix(c.Filename, filepath.Ext(c.Filename))
+		parsed := ptt.Parse(filenameNoExt)
+		if parsed.Title != "" {
+			searchTitle = parsed.Title
+		}
+		if parsed.Year > 0 {
+			searchYear = parsed.Year
+		}
+
+		match, err := s.tmdbClient.Match(mediaType, searchTitle, searchYear)
+		if err != nil {
+			s.logger.Debug().Err(err).Str("title", searchTitle).Msg("TMDB match failed")
+			continue
+		}
+		if match == nil {
+			continue
+		}
+
+		s.strmService.SetTMDBMatch(path, match)
+		matched++
+
+		s.logger.Debug().
+			Str("path", path).
+			Str("tmdb_title", match.Title).
+			Int("tmdb_id", match.TMDBID).
+			Msg("TMDB match found")
+	}
+
+	if matched > 0 || skipped > 0 {
+		s.logger.Info().
+			Int("matched", matched).
+			Int("skipped", skipped).
+			Dur("elapsed", time.Since(start).Round(time.Second)).
+			Msg("TMDB matching complete")
+	}
 }
 
 // runOrganizer executes the Go organizer to organize files using ptt-go.

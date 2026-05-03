@@ -18,6 +18,7 @@ import (
 	"github.com/robofuse/robofuse/pkg/nfo"
 	"github.com/robofuse/robofuse/pkg/probe"
 	"github.com/robofuse/robofuse/pkg/realdebrid"
+	"github.com/robofuse/robofuse/pkg/tmdb"
 	"github.com/robofuse/robofuse/pkg/tracking"
 	"github.com/rs/zerolog"
 )
@@ -629,6 +630,11 @@ func (s *Service) SetRDInfo(relativePath string, info *realdebrid.MediaInfoResul
 // GetTracking returns the tracking entry for a file, if it exists.
 func (s *Service) GetTracking(relativePath string) (*tracking.FileTracking, bool) {
 	return s.tracking.Get(relativePath)
+}
+
+// SetTMDBMatch stores TMDB match result for a tracked file.
+func (s *Service) SetTMDBMatch(relativePath string, match *tmdb.MatchResult) {
+	s.tracking.SetTMDBMatch(relativePath, match)
 }
 
 // sanitizeFilename makes a filename safe for the filesystem with enhanced cleaning
