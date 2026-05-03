@@ -747,6 +747,20 @@ func (s *Service) fetchMediaInfos(candidates []realdebrid.STRMCandidate) {
 				mu.Lock()
 				failed++
 				mu.Unlock()
+				// Log first few failures at WARN for diagnostics
+				cf := consecutiveFails.Load()
+				if cf <= 5 {
+					logEvt := s.logger.Warn().
+						Int64("consecutive", cf).
+						Str("id", dl.ID)
+					if errors.Is(err, realdebrid.ErrMediaInfoUnavailable) {
+						logEvt.Msg("RD media info unavailable (503)")
+					} else if err != nil {
+						logEvt.Err(err).Msg("RD media info fetch error")
+					} else {
+						logEvt.Msg("RD media info returned empty")
+					}
+				}
 				return
 			}
 

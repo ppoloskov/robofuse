@@ -2,6 +2,7 @@ package realdebrid
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -104,6 +105,9 @@ func (m *MediaInfoResult) FirstAudioStream() *MediaAudioStream {
 	return nil
 }
 
+// ErrMediaInfoUnavailable is returned when RD has no metadata for a file (503).
+var ErrMediaInfoUnavailable = errors.New("RD media info unavailable (503)")
+
 // GetMediaInfo fetches media metadata from Real-Debrid for a download ID.
 // The id comes from an unrestrict response (download.ID).
 // Returns nil, nil if the endpoint returns 503 (metadata not available).
@@ -123,11 +127,10 @@ func (c *Client) GetMediaInfo(id string) (*MediaInfoResult, error) {
 		return nil, fmt.Errorf("reading media info response: %w", err)
 	}
 
-	// 503 means RD couldn't find metadata for this file — not an error,
-	// just unavailable. Return nil, nil so caller can fall back.
+	// 503 means RD couldn't find metadata — return a sentinel error
+	// so the caller can log a meaningful message.
 	if resp.StatusCode == http.StatusServiceUnavailable {
-		c.logger.Debug().Str("id", id).Msg("RD media info not available (503)")
-		return nil, nil
+		return nil, ErrMediaInfoUnavailable
 	}
 
 	if resp.StatusCode != http.StatusOK {
