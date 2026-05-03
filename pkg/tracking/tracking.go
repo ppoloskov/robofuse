@@ -163,6 +163,7 @@ func (s *Service) SetMedia(relativePath string, media *probe.MediaInfo) {
 }
 
 // SetRDInfo stores Real-Debrid media info (type, duration, poster, etc.) for a tracked file.
+// Creates the entry if it doesn't exist yet (fetchMediaInfos runs before Sync).
 func (s *Service) SetRDInfo(relativePath string, info *realdebrid.MediaInfoResult) {
 	if info == nil {
 		return
@@ -172,7 +173,12 @@ func (s *Service) SetRDInfo(relativePath string, info *realdebrid.MediaInfoResul
 
 	entry, exists := s.data[relativePath]
 	if !exists {
-		return
+		entry = &FileTracking{
+			RelativePath: relativePath,
+			CreatedAt:    time.Now(),
+			LastChecked:  time.Now(),
+		}
+		s.data[relativePath] = entry
 	}
 
 	entry.RDType = info.Type
@@ -204,6 +210,8 @@ func (s *Service) MarkRDMediaFailed(relativePath string) {
 }
 
 // SetTMDBMatch stores TMDB match result for a tracked file.
+// Creates the tracking entry if it doesn't exist yet (matchTMDB runs
+// before Sync, which is where Track() normally creates entries).
 func (s *Service) SetTMDBMatch(relativePath string, match *tmdb.MatchResult) {
 	if match == nil {
 		return
@@ -213,7 +221,12 @@ func (s *Service) SetTMDBMatch(relativePath string, match *tmdb.MatchResult) {
 
 	entry, exists := s.data[relativePath]
 	if !exists {
-		return
+		entry = &FileTracking{
+			RelativePath: relativePath,
+			CreatedAt:    time.Now(),
+			LastChecked:  time.Now(),
+		}
+		s.data[relativePath] = entry
 	}
 
 	entry.TMDBID = match.TMDBID
