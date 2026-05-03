@@ -3,7 +3,6 @@ package request
 import (
 	"bytes"
 	"compress/gzip"
-	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -19,7 +18,6 @@ import (
 
 	"github.com/robofuse/robofuse/internal/logger"
 	"github.com/rs/zerolog"
-	"golang.org/x/net/proxy"
 	"golang.org/x/time/rate"
 )
 
@@ -220,7 +218,11 @@ func (c *Client) MakeRequest(req *http.Request) ([]byte, error) {
 	}
 
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return nil, fmt.Errorf("HTTP error %d: %s", res.StatusCode, string(bodyBytes))
+		return nil, &HTTPError{
+			StatusCode: res.StatusCode,
+			Message:    fmt.Sprintf("HTTP %d: %s", res.StatusCode, string(bodyBytes)),
+			Code:       fmt.Sprintf("http_%d", res.StatusCode),
+		}
 	}
 
 	return bodyBytes, nil
@@ -272,34 +274,11 @@ func New(options ...ClientOption) *Client {
 		}
 
 		if client.proxy != "" {
-			if strings.HasPrefix(client.proxy, "socks5://") {
-				socksURL, err := url.Parse(client.proxy)
-				if err != nil {
-					client.logger.Error().Msgf("Failed to parse SOCKS5 proxy URL: %v", err)
-				} else {
-					auth := &proxy.Auth{}
-					if socksURL.User != nil {
-						auth.User = socksURL.User.Username()
-						password, _ := socksURL.User.Password()
-						auth.Password = password
-					}
-
-					dialer, err := proxy.SOCKS5("tcp", socksURL.Host, auth, proxy.Direct)
-					if err != nil {
-						client.logger.Error().Msgf("Failed to create SOCKS5 dialer: %v", err)
-					} else {
-						transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-							return dialer.Dial(network, addr)
-						}
-					}
-				}
+			proxyURL, err := url.Parse(client.proxy)
+			if err != nil {
+				client.logger.Error().Msgf("Failed to parse proxy URL: %v", err)
 			} else {
-				proxyURL, err := url.Parse(client.proxy)
-				if err != nil {
-					client.logger.Error().Msgf("Failed to parse proxy URL: %v", err)
-				} else {
-					transport.Proxy = http.ProxyURL(proxyURL)
-				}
+				transport.Proxy = http.ProxyURL(proxyURL)
 			}
 		} else {
 			transport.Proxy = http.ProxyFromEnvironment

@@ -351,8 +351,19 @@ func (s *Service) buildSTRMPath(folderName, filename string) string {
 }
 
 // writeSTRM writes a .strm file with the download URL and robofuse metadata.
+// Refuses to write through symlinks that escape the output directory.
 func (s *Service) writeSTRM(relativePath, url, link, torrentID string) error {
 	fullPath := filepath.Join(s.config.OutputDir, relativePath)
+
+	// Resolve symlinks and verify the target stays within output dir
+	resolved, err := filepath.EvalSymlinks(fullPath)
+	if err == nil && resolved != fullPath {
+		// Path contains symlinks — verify it's still inside output dir
+		resolvedOut, _ := filepath.EvalSymlinks(s.config.OutputDir)
+		if !strings.HasPrefix(resolved, resolvedOut+string(filepath.Separator)) && resolved != resolvedOut {
+			return fmt.Errorf("refusing to write outside output dir: %s resolves to %s", fullPath, resolved)
+		}
+	}
 
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
 		return err

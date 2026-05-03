@@ -6,15 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"sync"
 )
 
 // config.go loads, validates, and exposes application configuration.
 
-var (
-	once     sync.Once
-	instance *Config
-)
+var instance *Config
 
 // Config holds the application configuration
 type Config struct {
@@ -164,15 +160,7 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// Get returns the singleton config instance
-func Get() *Config {
-	if instance == nil {
-		return defaults()
-	}
-	return instance
-}
-
-// SetInstance sets the global config instance
+// SetInstance sets the global config instance.
 func SetInstance(cfg *Config) {
 	instance = cfg
 }
