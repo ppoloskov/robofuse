@@ -78,11 +78,18 @@ func (q *Queue) Add(link, torrentID, filename, errorType, errorMsg string) {
 	}
 
 	q.items = append(q.items, item)
-	q.logger.Info().
+	logEvt := q.logger.Info().
 		Str("link", link).
 		Str("filename", filename).
-		Str("errorType", errorType).
-		Msg("Added to retry queue")
+		Str("errorType", errorType)
+	if torrentID != "" {
+		logEvt.Str("torrentID", torrentID)
+	}
+	// Include the error detail if it contains more than just the error type
+	if errorMsg != "" && errorMsg != errorType {
+		logEvt.Str("error", errorMsg)
+	}
+	logEvt.Msg("Added to retry queue")
 }
 
 // GetAll returns all items in the queue
