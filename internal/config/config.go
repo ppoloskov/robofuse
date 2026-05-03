@@ -39,6 +39,11 @@ type Config struct {
 	RetryQueueFile   string `json:"retry_queue_file"`
 	MaxRetryAttempts int    `json:"max_retry_attempts"`
 
+	// ffprobe media probing
+	EnableFFProbe bool   `json:"enable_ffprobe"` // whether to probe media streams
+	FFProbePath   string `json:"ffprobe_path"`   // path to ffprobe binary (default "ffprobe")
+	FFProbeTimeout int   `json:"ffprobe_timeout"` // timeout in seconds (default 15)
+
 	// Internal
 	Path string `json:"-"` // Config file path
 }
@@ -65,6 +70,10 @@ func defaults() *Config {
 
 		RetryQueueFile:   "./cache/retry_queue.json",
 		MaxRetryAttempts: 3,
+
+		EnableFFProbe:  false,
+		FFProbePath:    "ffprobe",
+		FFProbeTimeout: 15,
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/robofuse/robofuse/internal/logger"
+	"github.com/robofuse/robofuse/pkg/probe"
 	"github.com/rs/zerolog"
 )
 
@@ -14,12 +15,13 @@ import (
 
 // FileTracking represents tracking data for a single STRM file
 type FileTracking struct {
-	RelativePath string    `json:"relative_path"`
-	DownloadURL  string    `json:"download_url"`
-	Link         string    `json:"link"`
-	CreatedAt    time.Time `json:"created_at"`
-	LastChecked  time.Time `json:"last_checked"`
-	TorrentID    string    `json:"torrent_id"`
+	RelativePath string           `json:"relative_path"`
+	DownloadURL  string           `json:"download_url"`
+	Link         string           `json:"link"`
+	CreatedAt    time.Time        `json:"created_at"`
+	LastChecked  time.Time        `json:"last_checked"`
+	TorrentID    string           `json:"torrent_id"`
+	Media        *probe.MediaInfo `json:"media,omitempty"` // ffprobe metadata (may be nil)
 }
 
 // Service manages file tracking persistence
@@ -38,6 +40,7 @@ func New(trackingFile string) *Service {
 		logger:       logger.New("tracking"),
 	}
 
+	// Load existing data
 	if err := s.Load(); err != nil {
 		s.logger.Debug().Err(err).Msg("No existing tracking file, starting fresh")
 	}
@@ -53,11 +56,13 @@ func (s *Service) Track(relativePath, downloadURL, link, torrentID string) {
 	now := time.Now()
 
 	if existing, exists := s.data[relativePath]; exists {
+		// Update existing entry
 		existing.DownloadURL = downloadURL
 		existing.Link = link
 		existing.LastChecked = now
 		s.logger.Debug().Str("path", relativePath).Msg("Updated tracking")
 	} else {
+		// Create new entry
 		s.data[relativePath] = &FileTracking{
 			RelativePath: relativePath,
 			DownloadURL:  downloadURL,
@@ -71,6 +76,7 @@ func (s *Service) Track(relativePath, downloadURL, link, torrentID string) {
 }
 
 // GetExpired returns tracking data for files older than the specified duration.
+// Uses LastChecked when available; falls back to CreatedAt if LastChecked is zero.
 func (s *Service) GetExpired(olderThan time.Duration) []*FileTracking {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -101,6 +107,7 @@ func (s *Service) Get(relativePath string) (*FileTracking, bool) {
 }
 
 // GetByLink retrieves tracking data by Link (stable RD link), if any entry matches.
+// Returns the first match found; O(n) scan since Link is not the primary key.
 func (s *Service) GetByLink(link string) (*FileTracking, bool) {
 	if link == "" {
 		return nil, false
@@ -116,8 +123,21 @@ func (s *Service) GetByLink(link string) (*FileTracking, bool) {
 	return nil, false
 }
 
+// SetMedia stores ffprobe metadata for a tracked file.
+// Does nothing if the path is not tracked.
+func (s *Service) SetMedia(relativePath string, media *probe.MediaInfo) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if entry, exists := s.data[relativePath]; exists {
+		entry.Media = media
+		s.logger.Debug().Str("path", relativePath).Msg("Stored media metadata")
+	}
+}
+
 // MovePath re-keys a tracking entry from oldPath to newPath.
 // Used when a .strm file has been renamed outside robofuse.
+// If oldPath doesn't exist, this is a no-op.
 func (s *Service) MovePath(oldPath, newPath string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

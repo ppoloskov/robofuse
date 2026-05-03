@@ -1,15 +1,22 @@
 package strm
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
+	ptt "github.com/itsrenoria/ptt-go"
 	"github.com/robofuse/robofuse/internal/config"
 	"github.com/robofuse/robofuse/internal/logger"
+	"github.com/robofuse/robofuse/pkg/nfo"
+	"github.com/robofuse/robofuse/pkg/probe"
 	"github.com/robofuse/robofuse/pkg/realdebrid"
 	"github.com/robofuse/robofuse/pkg/tracking"
 	"github.com/rs/zerolog"
@@ -35,30 +42,57 @@ type existingFile struct {
 	Link string // RD link from line 2 (empty for legacy single-line files)
 }
 
+// probeTarget identifies a file that needs ffprobe analysis.
+type probeTarget struct {
+	path string
+	url  string
+}
+
 // Service handles STRM file generation
 type Service struct {
 	config   *config.Config
 	logger   zerolog.Logger
 	tracking *tracking.Service
+
+	// ffprobe support
+	probeAvailable bool         // true if ffprobe binary found and enabled
+	probeSem       chan struct{} // bounds concurrent ffprobe calls (max 2)
+	probeOnce      sync.Once     // ensures probeSem is initialized
 }
 
 // New creates a new STRM service
 func New(cfg *config.Config) *Service {
-	return &Service{
+	svc := &Service{
 		config:   cfg,
 		logger:   logger.New("strm"),
 		tracking: tracking.New(cfg.TrackingFile),
 	}
+
+	// Check ffprobe availability at startup (only once)
+	if cfg.EnableFFProbe {
+		path := cfg.FFProbePath
+		if path == "" {
+			path = "ffprobe"
+		}
+		if _, err := exec.LookPath(path); err == nil {
+			svc.probeAvailable = true
+			svc.logger.Info().Str("path", path).Msg("ffprobe detected — media probing enabled")
+		} else {
+			svc.logger.Warn().Str("path", path).Err(err).Msg("ffprobe not found — media probing disabled")
+		}
+	}
+
+	return svc
 }
 
 // SyncResult contains the results of a sync operation
 type SyncResult struct {
-	Added   int
-	Updated int
-	Deleted int
-	Skipped int
-	Renamed int // renamed files (detected, not recreated)
-	Tracked int
+	Added      int
+	Updated    int
+	Deleted    int
+	Skipped    int
+	Renamed    int // new: renamed files (detected, not recreated)
+	Tracked    int
 }
 
 // Sync synchronizes STRM files with the candidate list.
@@ -67,6 +101,9 @@ type SyncResult struct {
 // the tracking path and skip creation instead of making a duplicate.
 func (s *Service) Sync(candidates []realdebrid.STRMCandidate, dryRun bool) (*SyncResult, error) {
 	result := &SyncResult{}
+
+	// Collect paths that need ffprobe (new or updated URLs)
+	var probeJobs []probeTarget
 
 	// Ensure output directory exists
 	if !dryRun {
@@ -82,9 +119,9 @@ func (s *Service) Sync(candidates []realdebrid.STRMCandidate, dryRun bool) (*Syn
 	}
 
 	// Step 2: Build expected map and a reverse link→path index
-	expected := make(map[string]string)                       // relativePath → downloadURL
-	candidateMap := make(map[string]realdebrid.STRMCandidate) // relativePath → candidate
-	candidateLinkMap := make(map[string]string)               // Link → expectedPath (for rename detection)
+	expected := make(map[string]string)                             // relativePath → downloadURL
+	candidateMap := make(map[string]realdebrid.STRMCandidate)       // relativePath → candidate
+	candidateLinkMap := make(map[string]string)                     // Link → expectedPath (for rename detection)
 
 	for _, c := range candidates {
 		path := s.buildSTRMPath(c.TorrentFolder, c.Filename)
@@ -96,16 +133,20 @@ func (s *Service) Sync(candidates []realdebrid.STRMCandidate, dryRun bool) (*Syn
 	}
 
 	// Step 2b: Build a link→existingPath index from scanned files.
+	// Only files that carry a Link can be matched back to candidates.
 	linkToExistingPath := make(map[string]string) // Link → actual path on disk
 	for path, ef := range existing {
 		if ef.Link != "" {
+			// If the same Link appears at multiple paths (edge case),
+			// keep the first one found – Walk is deterministic.
 			if _, seen := linkToExistingPath[ef.Link]; !seen {
 				linkToExistingPath[ef.Link] = path
 			}
 		}
 	}
 
-	// Track which existing paths we've accounted for.
+	// Track which existing paths we've accounted for (either matched to
+	// expected or recognised as a rename). Anything left over is a true orphan.
 	accountedExisting := make(map[string]bool)
 
 	// Step 3: Process candidates (add/update/rename)
@@ -122,6 +163,8 @@ func (s *Service) Sync(candidates []realdebrid.STRMCandidate, dryRun bool) (*Syn
 				if !dryRun {
 					s.writeSTRM(path, url, candidate.Link, candidate.TorrentID)
 					s.tracking.Track(path, url, candidate.Link, candidate.TorrentID)
+					s.writeNFO(path, candidate)
+					probeJobs = append(probeJobs, probeTarget{path, url})
 				}
 				s.logger.Debug().Str("path", path).Msg("Updated STRM")
 			}
@@ -132,11 +175,15 @@ func (s *Service) Sync(candidates []realdebrid.STRMCandidate, dryRun bool) (*Syn
 				accountedExisting[actualPath] = true
 				result.Renamed++
 				if !dryRun {
+					// Update the tracking entry to point to the renamed path.
 					s.tracking.MovePath(path, actualPath)
+					// Also make sure the file on disk has current URL + metadata.
 					ef := existing[actualPath]
 					if ef.URL != url {
 						s.writeSTRM(actualPath, url, candidate.Link, candidate.TorrentID)
 						s.tracking.Track(actualPath, url, candidate.Link, candidate.TorrentID)
+						s.writeNFO(actualPath, candidate)
+						probeJobs = append(probeJobs, probeTarget{actualPath, url})
 					}
 				}
 				s.logger.Info().
@@ -150,6 +197,8 @@ func (s *Service) Sync(candidates []realdebrid.STRMCandidate, dryRun bool) (*Syn
 				if !dryRun {
 					s.writeSTRM(path, url, candidate.Link, candidate.TorrentID)
 					s.tracking.Track(path, url, candidate.Link, candidate.TorrentID)
+					s.writeNFO(path, candidate)
+					probeJobs = append(probeJobs, probeTarget{path, url})
 				}
 				s.logger.Debug().Str("path", path).Msg("Created STRM")
 			}
@@ -164,17 +213,20 @@ func (s *Service) Sync(candidates []realdebrid.STRMCandidate, dryRun bool) (*Syn
 		}
 	}
 
-	// Step 4: Delete true orphans
+	// Step 4: Delete true orphans – files on disk that are neither in the
+	// expected set nor recognised as a rename of an expected file.
 	for path := range existing {
 		if accountedExisting[path] {
 			continue
 		}
+		// Double-check: is this file's Link matched to ANY candidate?
+		// If so it's a rename we missed, so don't delete.
 		if ef := existing[path]; ef.Link != "" {
 			if _, matched := candidateLinkMap[ef.Link]; matched {
 				s.logger.Warn().
 					Str("path", path).
 					Str("link", ef.Link).
-					Msg("Orphan file matches a candidate Link — keeping (possible race)")
+					Msg("Orphan file matches a candidate Link but was not accounted — keeping (possible race)")
 				continue
 			}
 		}
@@ -199,6 +251,12 @@ func (s *Service) Sync(candidates []realdebrid.STRMCandidate, dryRun bool) (*Syn
 		}
 	}
 
+	// Dispatch ffprobe jobs asynchronously (non-blocking, bounded concurrency).
+	if s.probeAvailable && len(probeJobs) > 0 {
+		s.logger.Info().Int("count", len(probeJobs)).Msg("Dispatching ffprobe jobs")
+		s.dispatchProbes(probeJobs)
+	}
+
 	result.Tracked = s.tracking.Count()
 
 	s.logger.Debug().
@@ -215,12 +273,14 @@ func (s *Service) Sync(candidates []realdebrid.STRMCandidate, dryRun bool) (*Syn
 }
 
 // scanExisting scans the output directory for existing STRM files.
+// Returns a map of relativePath → existingFile (with URL and Link parsed).
+// Old single-line .strm files will have an empty Link.
 func (s *Service) scanExisting() (map[string]existingFile, error) {
 	existing := make(map[string]existingFile)
 
 	err := filepath.Walk(s.config.OutputDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			return nil
+			return nil // Skip errors
 		}
 		if info.IsDir() {
 			return nil
@@ -231,7 +291,7 @@ func (s *Service) scanExisting() (map[string]existingFile, error) {
 
 		content, err := os.ReadFile(path)
 		if err != nil {
-			return nil
+			return nil // Skip unreadable files
 		}
 
 		relPath, err := filepath.Rel(s.config.OutputDir, path)
@@ -252,6 +312,10 @@ func (s *Service) scanExisting() (map[string]existingFile, error) {
 }
 
 // parseSTRMContent splits a .strm file's content into URL and optional Link.
+// Format:
+//
+//	line 1: <download_url>
+//	line 2 (optional): # robofuse: link=<rd_link> torrent=<torrent_id>
 func parseSTRMContent(content []byte) existingFile {
 	lines := strings.SplitN(strings.TrimSpace(string(content)), "\n", 2)
 	ef := existingFile{
@@ -294,6 +358,154 @@ func (s *Service) writeSTRM(relativePath, url, link, torrentID string) error {
 	return os.WriteFile(fullPath, []byte(content), 0644)
 }
 
+// writeNFO creates a Kodi-compatible .nfo file alongside the .strm file.
+// It parses the torrent folder and download filename with PTT to extract
+// title, year, season, episode, and other metadata.
+// If probe data exists in tracking, stream details are included.
+func (s *Service) writeNFO(strmRelPath string, candidate realdebrid.STRMCandidate) {
+	fullPath := filepath.Join(s.config.OutputDir, strmRelPath)
+
+	// Parse the download filename
+	filenameNoExt := strings.TrimSuffix(candidate.Filename, filepath.Ext(candidate.Filename))
+	parsed := ptt.Parse(filenameNoExt)
+
+	// Parse the torrent folder name for show-level metadata
+	folderName := filepath.Base(candidate.TorrentFolder)
+	folderParsed := ptt.Parse(folderName)
+
+	// Determine type and extract fields
+	data := &nfo.Data{
+		FileSize: candidate.Filesize,
+	}
+
+	isSeries := len(parsed.Seasons) > 0 || len(parsed.Episodes) > 0 || parsed.Anime
+	isSeriesFolder := len(folderParsed.Seasons) > 0 || len(folderParsed.Episodes) > 0 || folderParsed.Anime
+
+	if isSeriesFolder {
+		data.Type = "episode"
+		data.ShowTitle = firstNonEmpty(folderParsed.Title, folderName)
+		data.Year = firstNonZero(folderParsed.Year, parsed.Year)
+		if len(parsed.Seasons) > 0 {
+			data.Season = parsed.Seasons[0]
+		} else if len(folderParsed.Seasons) > 0 {
+			data.Season = folderParsed.Seasons[0]
+		}
+		if len(parsed.Episodes) > 0 {
+			data.Episode = parsed.Episodes[0]
+		}
+		data.Title = firstNonEmpty(parsed.Title, candidate.Filename)
+	} else if isSeries {
+		data.Type = "episode"
+		data.ShowTitle = firstNonEmpty(parsed.Title, folderName)
+		data.Year = parsed.Year
+		if len(parsed.Seasons) > 0 {
+			data.Season = parsed.Seasons[0]
+		}
+		if len(parsed.Episodes) > 0 {
+			data.Episode = parsed.Episodes[0]
+		}
+		data.Title = firstNonEmpty(parsed.Title, candidate.Filename)
+	} else {
+		// Movie
+		data.Type = "movie"
+		data.Title = firstNonEmpty(parsed.Title, folderParsed.Title, filenameNoExt)
+		data.Year = firstNonZero(parsed.Year, folderParsed.Year)
+	}
+
+	// Check if we have media metadata from a previous probe
+	if ft, ok := s.tracking.Get(strmRelPath); ok && ft.Media != nil {
+		data.Media = ft.Media
+	}
+
+	if err := nfo.Write(fullPath, data); err != nil {
+		s.logger.Debug().Err(err).Str("path", strmRelPath).Msg("Failed to write NFO")
+	}
+}
+
+// refreshNFOWithMedia updates the .nfo file with fresh stream details after ffprobe completes.
+func (s *Service) refreshNFOWithMedia(strmRelPath string, media *probe.MediaInfo) {
+	if media == nil {
+		return
+	}
+	// Re-read tracking to get the full FileTracking (which now has Media set)
+	ft, ok := s.tracking.Get(strmRelPath)
+	if !ok {
+		return
+	}
+
+	// Parse the filename again to build NFO data
+	filename := filepath.Base(strmRelPath)
+	filenameNoExt := strings.TrimSuffix(filename, filepath.Ext(filename))
+	parsed := ptt.Parse(filenameNoExt)
+
+	folderName := filepath.Base(filepath.Dir(strmRelPath))
+	folderParsed := ptt.Parse(folderName)
+
+	data := &nfo.Data{
+		Media: media,
+	}
+
+	isSeries := len(parsed.Seasons) > 0 || len(parsed.Episodes) > 0 || parsed.Anime
+	isSeriesFolder := len(folderParsed.Seasons) > 0 || len(folderParsed.Episodes) > 0 || folderParsed.Anime
+
+	if isSeriesFolder {
+		data.Type = "episode"
+		data.ShowTitle = firstNonEmpty(folderParsed.Title, folderName)
+		data.Year = firstNonZero(folderParsed.Year, parsed.Year)
+		if len(parsed.Seasons) > 0 {
+			data.Season = parsed.Seasons[0]
+		} else if len(folderParsed.Seasons) > 0 {
+			data.Season = folderParsed.Seasons[0]
+		}
+		if len(parsed.Episodes) > 0 {
+			data.Episode = parsed.Episodes[0]
+		}
+		data.Title = firstNonEmpty(parsed.Title, filenameNoExt)
+	} else if isSeries {
+		data.Type = "episode"
+		data.ShowTitle = firstNonEmpty(parsed.Title, folderName)
+		data.Year = parsed.Year
+		if len(parsed.Seasons) > 0 {
+			data.Season = parsed.Seasons[0]
+		}
+		if len(parsed.Episodes) > 0 {
+			data.Episode = parsed.Episodes[0]
+		}
+		data.Title = firstNonEmpty(parsed.Title, filenameNoExt)
+	} else {
+		data.Type = "movie"
+		data.Title = firstNonEmpty(parsed.Title, folderParsed.Title, filenameNoExt)
+		data.Year = firstNonZero(parsed.Year, folderParsed.Year)
+	}
+
+	_ = ft // keep reference
+
+	fullPath := filepath.Join(s.config.OutputDir, strmRelPath)
+	if err := nfo.Write(fullPath, data); err != nil {
+		s.logger.Debug().Err(err).Str("path", strmRelPath).Msg("Failed to refresh NFO with media")
+	} else {
+		s.logger.Debug().Str("path", strmRelPath).Msg("NFO updated with stream details")
+	}
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func firstNonZero(vals ...int) int {
+	for _, v := range vals {
+		if v != 0 {
+			return v
+		}
+	}
+	return 0
+}
+
 // cleanupEmptyDirs removes empty directories up to the output root
 func (s *Service) cleanupEmptyDirs(dir string) {
 	for dir != s.config.OutputDir && dir != "" && dir != "." {
@@ -306,34 +518,86 @@ func (s *Service) cleanupEmptyDirs(dir string) {
 	}
 }
 
+// dispatchProbes runs ffprobe on a list of targets asynchronously.
+// Concurrency is capped at 2 to avoid overwhelming the network and ffprobe.
+// Results are stored in the tracking database whenever a probe completes.
+func (s *Service) dispatchProbes(targets []probeTarget) {
+	s.probeOnce.Do(func() {
+		s.probeSem = make(chan struct{}, 2) // max 2 concurrent ffprobe calls
+	})
+
+	timeout := time.Duration(s.config.FFProbeTimeout) * time.Second
+	ffprobePath := s.config.FFProbePath
+	if ffprobePath == "" {
+		ffprobePath = "ffprobe"
+	}
+
+	for _, t := range targets {
+		t := t // capture
+		go func() {
+			s.probeSem <- struct{}{}
+			defer func() { <-s.probeSem }()
+
+			ctx := context.Background()
+			media, err := probe.Probe(ctx, t.url, timeout, ffprobePath, s.logger)
+			if err != nil {
+				s.logger.Debug().
+					Err(err).
+					Str("path", t.path).
+					Msg("ffprobe failed")
+				return
+			}
+			if media == nil {
+				return
+			}
+
+			s.tracking.SetMedia(t.path, media)
+			s.refreshNFOWithMedia(t.path, media)
+			s.logger.Info().
+				Str("path", t.path).
+				Str("resolution", media.Resolution).
+				Str("duration", media.Duration).
+				Int("video_streams", len(media.Video)).
+				Int("audio_streams", len(media.Audio)).
+				Msg("Media probed")
+		}()
+	}
+}
+
 // sanitizeFilename makes a filename safe for the filesystem with enhanced cleaning
 func sanitizeFilename(name string) string {
+	// Step 1: Multi-pass URL decoding (up to 3 times)
 	for i := 0; i < 3; i++ {
 		decoded := urlDecode(name)
 		if decoded == name {
-			break
+			break // No more decoding needed
 		}
 		name = decoded
 	}
 
+	// Step 2: Remove common site prefixes (e.g., hhd001.com@)
 	name = removeSitePrefixes(name)
 
+	// Step 3: Remove file extension to work with base name
 	ext := filepath.Ext(name)
 	baseName := strings.TrimSuffix(name, ext)
 
+	// Step 4: Replace separators with spaces for readability
 	baseName = strings.ReplaceAll(baseName, ".", " ")
 	baseName = strings.ReplaceAll(baseName, "_", " ")
 	baseName = strings.ReplaceAll(baseName, "-", " ")
 
+	// Step 5: Collapse multiple spaces
 	baseName = strings.Join(strings.Fields(baseName), " ")
 
+	// Step 6: Word-boundary-aware truncation
 	if len(baseName) > 200 {
 		words := strings.Fields(baseName)
 		truncated := ""
 		for _, word := range words {
 			testLen := len(truncated)
 			if truncated != "" {
-				testLen += 1
+				testLen += 1 // Space
 			}
 			testLen += len(word)
 
@@ -353,17 +617,20 @@ func sanitizeFilename(name string) string {
 		}
 	}
 
+	// Step 7: Replace invalid filesystem characters
 	replacer := strings.NewReplacer(
 		"/", "_", "\\", "_", ":", "_", "*", "_",
 		"?", "_", "\"", "_", "<", "_", ">", "_", "|", "_",
 	)
 	baseName = replacer.Replace(baseName)
 
+	// Step 8: Trim whitespace
 	baseName = strings.TrimSpace(baseName)
 
 	return baseName + ext
 }
 
+// urlDecode decodes URL-encoded strings
 func urlDecode(s string) string {
 	decoded := s
 	for i := 0; i < len(decoded)-2; i++ {
@@ -377,6 +644,7 @@ func urlDecode(s string) string {
 	return decoded
 }
 
+// removeSitePrefixes removes common site prefixes from filenames
 func removeSitePrefixes(s string) string {
 	prefixPattern := `^(hhd\d+\.com@|hdd\d+\.com@|www\.[\w-]+\.com@|[\w-]+\.com@)`
 	re := regexp.MustCompile(prefixPattern)

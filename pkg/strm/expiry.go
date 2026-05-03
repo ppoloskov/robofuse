@@ -15,7 +15,8 @@ func (s *Service) GetExpiredFiles(olderThan time.Duration) []*tracking.FileTrack
 
 // UpdateSTRM updates an existing STRM file with a new URL and refreshes tracking.
 // Writes both the URL (line 1) and robofuse metadata (line 2) so the file
-// remains compatible with rename detection.
+// remains compatible with rename detection. Also refreshes the companion .nfo
+// if media metadata is available.
 func (s *Service) UpdateSTRM(relativePath, newURL, link, torrentID string) error {
 	if err := s.writeSTRM(relativePath, newURL, link, torrentID); err != nil {
 		return err
@@ -23,6 +24,11 @@ func (s *Service) UpdateSTRM(relativePath, newURL, link, torrentID string) error
 
 	// Update tracking with new URL and refresh timestamp
 	s.tracking.Track(relativePath, newURL, link, torrentID)
+
+	// Refresh the companion .nfo if we have media metadata
+	if ft, ok := s.tracking.Get(relativePath); ok && ft.Media != nil {
+		s.refreshNFOWithMedia(relativePath, ft.Media)
+	}
 
 	// Save tracking data
 	if err := s.tracking.Save(); err != nil {

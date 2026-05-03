@@ -7,13 +7,16 @@
   "file_expiry_days": 6,
   "retry_queue_file": "./cache/retry_queue.json",
   "max_retry_attempts": 3,
-  "concurrent_requests": 50,
-  "general_rate_limit": 250,
+  "concurrent_requests": 10,
+  "general_rate_limit": 60,
   "torrents_rate_limit": 25,
   "watch_mode": false,
   "watch_mode_interval": 60,
   "repair_torrents": true,
   "min_file_size_mb": 150,
   "ptt_rename": true,
-  "log_level": "info"
+  "log_level": "info",
+  "enable_ffprobe": false,
+  "ffprobe_path": "ffprobe",
+  "ffprobe_timeout": 15
 }
