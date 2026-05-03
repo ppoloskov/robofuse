@@ -1,12 +1,13 @@
 package retry
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"sync"
 	"time"
 
-	"github.com/robofuse/robofuse/internal/atom"
+	"github.com/natefinch/atomic"
 	"github.com/robofuse/robofuse/internal/logger"
 	"github.com/rs/zerolog"
 )
@@ -147,7 +148,7 @@ func (q *Queue) Save() error {
 		return err
 	}
 
-	if err := atom.WriteFile(q.queueFile, data, 0600); err != nil {
+	if err := atomic.WriteFile(q.queueFile, bytes.NewReader(data)); err != nil {
 		return err
 	}
 

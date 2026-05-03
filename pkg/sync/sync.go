@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sourcegraph/conc/pool"
 	ptt "github.com/itsrenoria/ptt-go"
 	"github.com/robofuse/robofuse/internal/config"
 	"github.com/robofuse/robofuse/internal/console"
@@ -21,7 +22,6 @@ import (
 	"github.com/robofuse/robofuse/pkg/retry"
 	"github.com/robofuse/robofuse/pkg/strm"
 	"github.com/robofuse/robofuse/pkg/tmdb"
-	"github.com/robofuse/robofuse/pkg/worker"
 	"github.com/rs/zerolog"
 )
 
@@ -426,11 +426,11 @@ func (s *Service) unrestrictLinks(links []missingLink, dryRun bool) ([]*realdebr
 		progress.Update(0)
 	}
 
-	pool := worker.NewPool(s.config.ConcurrentRequests)
+	concPool := pool.New().WithMaxGoroutines(s.config.ConcurrentRequests)
 
 	for _, ml := range links {
 		ml := ml // capture
-		pool.Submit(func() {
+		concPool.Go(func() {
 			// --- Circuit breaker: check if we're in cooldown ---
 			if cd := cooldownUntil.Load(); cd > 0 {
 				remaining := time.Until(time.Unix(cd, 0))
@@ -516,7 +516,7 @@ func (s *Service) unrestrictLinks(links []missingLink, dryRun bool) ([]*realdebr
 		})
 	}
 
-	pool.Wait()
+	concPool.Wait()
 
 	// Auto-repair: if repair_torrents is enabled, repair torrents where
 	// ALL attempted links failed with RD error code 19 (torrent data not cached).

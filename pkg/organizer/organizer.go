@@ -4,6 +4,7 @@
 package organizer
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,7 +14,7 @@ import (
 	"strings"
 
 	ptt "github.com/itsrenoria/ptt-go"
-	"github.com/robofuse/robofuse/internal/atom"
+	"github.com/natefinch/atomic"
 	"github.com/rs/zerolog"
 )
 
@@ -130,7 +131,7 @@ func (o *Organizer) saveDB() error {
 	if err != nil {
 		return err
 	}
-	return atom.WriteFile(o.dbPath, data, 0600)
+	return atomic.WriteFile(o.dbPath, bytes.NewReader(data))
 }
 
 // loadTracking loads the file tracking database.
