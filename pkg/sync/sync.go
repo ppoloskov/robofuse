@@ -279,6 +279,12 @@ func (s *Service) Watch() error {
 	}
 }
 
+// WaitForProbes blocks until all in-flight ffprobe jobs complete.
+// Call before exiting in single-run mode.
+func (s *Service) WaitForProbes() {
+	s.strmService.WaitForProbes()
+}
+
 // refreshExpiringLinks refreshes links that will expire before the next run
 func (s *Service) refreshExpiringLinks(interval time.Duration) {
 	// Get files older than configured expiry days

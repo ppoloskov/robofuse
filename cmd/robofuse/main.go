@@ -142,6 +142,10 @@ func runSync(cfg *config.Config, dryRun bool) {
 		os.Exit(1)
 	}
 
+	// Wait for background ffprobe jobs to finish so NFO files
+	// get stream metadata before the process exits.
+	service.WaitForProbes()
+
 	summary := sync.FormatSummary(result, sync.SummaryOptions{
 		DryRun:     dryRun,
 		IncludeOrg: cfg.PttRename && !dryRun,

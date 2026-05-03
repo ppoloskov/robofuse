@@ -58,6 +58,7 @@ type Service struct {
 	probeAvailable bool         // true if ffprobe binary found and enabled
 	probeSem       chan struct{} // bounds concurrent ffprobe calls (max 2)
 	probeOnce      sync.Once     // ensures probeSem is initialized
+	probeWg        sync.WaitGroup // tracks in-flight probes
 }
 
 // New creates a new STRM service
@@ -534,7 +535,9 @@ func (s *Service) dispatchProbes(targets []probeTarget) {
 
 	for _, t := range targets {
 		t := t // capture
+		s.probeWg.Add(1)
 		go func() {
+			defer s.probeWg.Done()
 			s.probeSem <- struct{}{}
 			defer func() { <-s.probeSem }()
 
@@ -562,6 +565,13 @@ func (s *Service) dispatchProbes(targets []probeTarget) {
 				Msg("Media probed")
 		}()
 	}
+}
+
+// WaitForProbes blocks until all in-flight ffprobe jobs complete.
+// Call this before exiting in single-run mode to ensure NFO files
+// are refreshed with stream metadata.
+func (s *Service) WaitForProbes() {
+	s.probeWg.Wait()
 }
 
 // sanitizeFilename makes a filename safe for the filesystem with enhanced cleaning

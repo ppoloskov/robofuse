@@ -45,6 +45,9 @@ type Config struct {
 	FFProbePath   string `json:"ffprobe_path"`   // path to ffprobe binary (default "ffprobe")
 	FFProbeTimeout int   `json:"ffprobe_timeout"` // timeout in seconds (default 15)
 
+	// Content filtering
+	ExcludeKeywordsFile string `json:"exclude_keywords_file"` // path to file with one keyword per line (case-insensitive)
+
 	// Internal
 	Path string `json:"-"` // Config file path
 }
