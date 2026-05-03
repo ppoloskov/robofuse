@@ -22,12 +22,16 @@ Rewritten from the ground up in **Go**, robofuse is designed for speed, efficien
 
 - 🚀 **Blazing Fast**: Built with Go's concurrent worker pools for maximum performance.
 - 🔄 **Smart Sync**: Only updates what's changed. Adds new files, updates modified ones, and cleans up orphans.
+- 🔁 **Rename Tracking**: Detects `.strm` files renamed outside robofuse and preserves them — no duplicate creation or accidental deletion.
+- 🛡️ **Intelligent Retries**: Exponential backoff with jitter for 503/429 errors prevents thundering herds. Circuit breaker pauses all workers when the API is struggling.
+- 🎬 **Media Probing** *(optional)*: Uses `ffprobe` to capture codec, resolution, bitrate, duration, and audio metadata from your media streams.
+- 📄 **Kodi NFO Files**: Automatically generates `.nfo` files alongside `.strm` files for rich metadata in Kodi, Jellyfin, and Emby. Auto-detects movies vs TV episodes.
 - 🧹 **Auto-Repair**: Automatically detects dead downloads and re-adds them using cached magnet links.
 - 📦 **Paginator**: Handles large libraries with ease by paginating through your Real-Debrid downloads.
 - ⏱️ **Watch Mode**: Set it and forget it. Runs continuously in the background to keep your library fresh.
-- 🛡️ **Rate Limit Protection**: Smartly respects separate rate limits for different API endpoints.
 - 🎯 **Deduplication**: Automatically handles duplicate downloads, keeping only the latest version.
 - 📝 **Metadata Parsing**: Integrated ptt-go parsing for cleaner, better-organized file names.
+- 🔧 **Env Var Config**: Override any config setting via `ROBOFUSE_*` environment variables — ideal for Docker and CI/CD.
 
 ---
 
@@ -36,6 +40,7 @@ Rewritten from the ground up in **Go**, robofuse is designed for speed, efficien
 ### Prerequisites
 
 - **Real-Debrid Account**: You need an API token from your [Real-Debrid Account Panel](https://real-debrid.com/apitoken).
+- **ffprobe** *(optional)*: Required only if you enable media probing (`enable_ffprobe: true`). Part of `ffmpeg`. Install via your package manager (`brew install ffmpeg`, `apt install ffmpeg`, etc.).
 - **Install method**: Choose [Docker (recommended)](#install-docker), [Binary](#install-binary), or [Go Run](#install-go-run).
 - **Go version**: `1.21+` is required only for [Go Run](#install-go-run).
 
@@ -91,10 +96,10 @@ Rewritten from the ground up in **Go**, robofuse is designed for speed, efficien
 ### Platform Notes
 
 > [!NOTE]
-> Optional explicit config path: use `-c` (or `--config`) if your config file is not in the current directory.
+> Optional explicit config path: use `-c` (or `--config`) if your config file is not in the current directory. You can also set the `ROBOFUSE_CONFIG` environment variable.
 > ```bash
 > ./robofuse -c /absolute/path/to/config.json run
-> go run ./cmd/robofuse -c /absolute/path/to/config.json run
+> ROBOFUSE_CONFIG=/path/to/config.json ./robofuse run
 > ```
 
 > [!NOTE]
@@ -120,7 +125,7 @@ Rewritten from the ground up in **Go**, robofuse is designed for speed, efficien
 <a id="configuration"></a>
 ## ⚙️ Configuration
 
-Edit `config.json` to customize robofuse:
+Edit `config.json` to customize robofuse. All settings can also be overridden via environment variables (see [Environment Variables](#environment-variables) below).
 
 ### Configuration Options
 
@@ -129,23 +134,124 @@ Edit `config.json` to customize robofuse:
 | `token` | string | **Required** | Your Real-Debrid API Token. |
 | `output_dir` | string | `./library` | Where raw STRM files will be generated. |
 | `organized_dir` | string | `./library-organized` | Where renamed/organized STRM files will be placed if `ptt_rename` is set to `true`. |
-| `cache_dir` | string | `./cache` | Directory for storing state/cache. |
-| `concurrent_requests` | int | `50` | Max concurrent worker threads for processing. |
-| `general_rate_limit` | int | `250` | Request limit per minute for general API calls. |
-| `torrents_rate_limit` | int | `25` | Request limit per minute for download endpoints. |
-| `watch_mode` | bool | `false` | If set to `false`, robofuse will only run a single sync cycle. If set to `true`, robofuse will run in watch mode, which will run continuously in the background syncing every `watch_mode_interval` seconds. |
+| `cache_dir` | string | `./cache` | Directory for storing state/cache files. |
+| `concurrent_requests` | int | `10` | Max concurrent worker threads for unrestrict operations. Lower values reduce API pressure during outages. |
+| `general_rate_limit` | int | `60` | Request limit per minute for general API calls (downloads, unrestrict). |
+| `torrents_rate_limit` | int | `25` | Request limit per minute for torrent endpoints. |
+| `watch_mode` | bool | `false` | If `true`, runs continuously syncing every `watch_mode_interval` seconds. |
 | `watch_mode_interval` | int | `60` | Seconds to wait between sync cycles in watch mode. |
 | `repair_torrents` | bool | `true` | Automatically attempt to repair dead downloads by re-adding magnets. |
-| `min_file_size_mb` | int | `150` | Ignore files smaller than this size (prevents samples), subtitles are ignored. |
-| `ptt_rename` | bool | `true` | Use PTT logic to clean/rename files. |
+| `min_file_size_mb` | int | `150` | Ignore video files smaller than this size (prevents samples/ads). Subtitles are never filtered by size. |
+| `ptt_rename` | bool | `true` | Use PTT parsing to clean filenames and organize into Movies/Series/Anime folders. |
 | `log_level` | string | `"info"` | Logging verbosity (`debug`, `info`, `warn`, `error`). |
-| `file_expiry_days` | int | `6` | Days to consider a file as expired from downloads in real-debrid. |
+| `tracking_file` | string | `./cache/file_tracking.json` | Path to the file tracking database (stores per-file metadata and link freshness). |
+| `file_expiry_days` | int | `6` | Days after which a download link is considered expired and refreshed. |
+| `retry_queue_file` | string | `./cache/retry_queue.json` | Path to the persistent retry queue for cross-cycle retries. |
+| `max_retry_attempts` | int | `3` | Maximum cross-cycle retry attempts for queued items before giving up. |
+| `enable_ffprobe` | bool | `false` | Run `ffprobe` on download URLs to capture video/audio stream metadata (requires `ffprobe` installed). |
+| `ffprobe_path` | string | `"ffprobe"` | Path to the `ffprobe` binary. |
+| `ffprobe_timeout` | int | `15` | Timeout in seconds for each ffprobe call. |
 
-> [!TIP]
-> The default rate limits are conservative and tuned for stability. You can raise them (for example `600+` general and `100+` concurrent), but results vary by library size and current Real-Debrid load.
+> [!IMPORTANT]
+> The default concurrency and rate limits are tuned for stability. With large libraries (800+ files), raising `concurrent_requests` or `general_rate_limit` can trigger Real-Debrid's server-side rate limiting (503 errors) and cause a retry cascade. Start low and increase gradually.
 
 > [!IMPORTANT]
 > Don't delete `library`, `library-organized`, or `cache` by hand. These folders are part of the state/tracking system. If you need to reset, stop the service, back up what you need, then clear them intentionally.
+
+<a id="environment-variables"></a>
+### Environment Variables
+
+Every config key can be set via an environment variable with the `ROBOFUSE_` prefix. Env vars **override** the config file values. Only non-empty env vars are applied — unset vars leave the config file or default value intact.
+
+| Env var | Maps to |
+|---------|---------|
+| `ROBOFUSE_CONFIG` | Path to config file (checked before default paths) |
+| `ROBOFUSE_TOKEN` | `token` |
+| `ROBOFUSE_OUTPUT_DIR` | `output_dir` |
+| `ROBOFUSE_ORGANIZED_DIR` | `organized_dir` |
+| `ROBOFUSE_CACHE_DIR` | `cache_dir` |
+| `ROBOFUSE_CONCURRENT_REQUESTS` | `concurrent_requests` |
+| `ROBOFUSE_GENERAL_RATE_LIMIT` | `general_rate_limit` |
+| `ROBOFUSE_TORRENTS_RATE_LIMIT` | `torrents_rate_limit` |
+| `ROBOFUSE_WATCH_MODE` | `watch_mode` |
+| `ROBOFUSE_WATCH_MODE_INTERVAL` | `watch_mode_interval` |
+| `ROBOFUSE_REPAIR_TORRENTS` | `repair_torrents` |
+| `ROBOFUSE_MIN_FILE_SIZE_MB` | `min_file_size_mb` |
+| `ROBOFUSE_LOG_LEVEL` | `log_level` |
+| `ROBOFUSE_PTT_RENAME` | `ptt_rename` |
+| `ROBOFUSE_TRACKING_FILE` | `tracking_file` |
+| `ROBOFUSE_FILE_EXPIRY_DAYS` | `file_expiry_days` |
+| `ROBOFUSE_RETRY_QUEUE_FILE` | `retry_queue_file` |
+| `ROBOFUSE_MAX_RETRY_ATTEMPTS` | `max_retry_attempts` |
+| `ROBOFUSE_ENABLE_FFPROBE` | `enable_ffprobe` |
+| `ROBOFUSE_FFPROBE_PATH` | `ffprobe_path` |
+| `ROBOFUSE_FFPROBE_TIMEOUT` | `ffprobe_timeout` |
+
+Bool values accept `true`, `false`, `1`, `0` (per `strconv.ParseBool`). Int values must be valid decimal integers. Strings are used as-is.
+
+**Examples:**
+
+```bash
+# Override just the token and log level
+ROBOFUSE_TOKEN=abc123 ROBOFUSE_LOG_LEVEL=debug ./robofuse run
+
+# Run with a custom config file
+ROBOFUSE_CONFIG=/etc/robofuse/config.json ./robofuse run
+
+# Docker: pass env vars inline
+docker run -e ROBOFUSE_TOKEN=abc123 -e ROBOFUSE_CONCURRENT_REQUESTS=5 ...
+```
+
+---
+
+## 📁 File Formats
+
+### .strm files
+
+STRM files contain the download URL on line 1 and robofuse metadata on line 2:
+
+```
+https://download.real-debrid.com/...
+# robofuse: link=https://real-debrid.com/d/TP2D7RL7LPGTGE95 torrent=ABC123
+```
+
+- **Line 1**: The direct download URL — read by Kodi, Jellyfin, Emby, Infuse.
+- **Line 2**: A comment (ignored by players) containing the stable Real-Debrid link and torrent ID. This is used internally for **rename tracking** — if you rename a `.strm` file outside robofuse, the next sync matches it by Link instead of path and preserves your rename.
+
+### .nfo files *(with ffprobe enabled)*
+
+When `enable_ffprobe: true`, robofuse generates Kodi-compatible `.nfo` files alongside every `.strm` file. The NFO contains:
+
+- **Title, year** — parsed from the filename via ptt-go.
+- **Season, episode** — for TV series, auto-detected from filename patterns.
+- **Stream details** — codec, resolution, bitrate, duration, audio channels, and language from ffprobe.
+
+Example movie NFO:
+```xml
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<movie>
+  <title>Movie Title</title>
+  <year>2024</year>
+  <fileinfo>
+    <streamdetails>
+      <video>
+        <codec>hevc</codec>
+        <width>3840</width>
+        <height>2160</height>
+        <bitrate>25000000</bitrate>
+        <durationinseconds>5535</durationinseconds>
+      </video>
+      <audio>
+        <codec>aac</codec>
+        <channels>6</channels>
+        <language>eng</language>
+      </audio>
+    </streamdetails>
+  </fileinfo>
+</movie>
+```
+
+NFO files are written at `.strm` creation time and refreshed asynchronously after ffprobe completes.
 
 ---
 
@@ -193,6 +299,9 @@ docker compose up -d --build
 
 # Preview changes only
 ./robofuse dry-run
+
+# Override settings via env vars
+ROBOFUSE_CONCURRENT_REQUESTS=5 ROBOFUSE_LOG_LEVEL=debug ./robofuse watch
 ```
 
 ### Go Run
