@@ -38,7 +38,6 @@ func New(trackingFile string) *Service {
 		logger:       logger.New("tracking"),
 	}
 
-	// Load existing data
 	if err := s.Load(); err != nil {
 		s.logger.Debug().Err(err).Msg("No existing tracking file, starting fresh")
 	}
@@ -54,13 +53,11 @@ func (s *Service) Track(relativePath, downloadURL, link, torrentID string) {
 	now := time.Now()
 
 	if existing, exists := s.data[relativePath]; exists {
-		// Update existing entry
 		existing.DownloadURL = downloadURL
 		existing.Link = link
 		existing.LastChecked = now
 		s.logger.Debug().Str("path", relativePath).Msg("Updated tracking")
 	} else {
-		// Create new entry
 		s.data[relativePath] = &FileTracking{
 			RelativePath: relativePath,
 			DownloadURL:  downloadURL,
@@ -74,7 +71,6 @@ func (s *Service) Track(relativePath, downloadURL, link, torrentID string) {
 }
 
 // GetExpired returns tracking data for files older than the specified duration.
-// Uses LastChecked when available; falls back to CreatedAt if LastChecked is zero.
 func (s *Service) GetExpired(olderThan time.Duration) []*FileTracking {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -102,6 +98,41 @@ func (s *Service) Get(relativePath string) (*FileTracking, bool) {
 
 	tracking, exists := s.data[relativePath]
 	return tracking, exists
+}
+
+// GetByLink retrieves tracking data by Link (stable RD link), if any entry matches.
+func (s *Service) GetByLink(link string) (*FileTracking, bool) {
+	if link == "" {
+		return nil, false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for _, t := range s.data {
+		if t.Link == link {
+			return t, true
+		}
+	}
+	return nil, false
+}
+
+// MovePath re-keys a tracking entry from oldPath to newPath.
+// Used when a .strm file has been renamed outside robofuse.
+func (s *Service) MovePath(oldPath, newPath string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	entry, exists := s.data[oldPath]
+	if !exists {
+		return
+	}
+	entry.RelativePath = newPath
+	s.data[newPath] = entry
+	delete(s.data, oldPath)
+	s.logger.Info().
+		Str("old", oldPath).
+		Str("new", newPath).
+		Msg("Moved tracking entry (rename detected)")
 }
 
 // Remove deletes tracking data for a file

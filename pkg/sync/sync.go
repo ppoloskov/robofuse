@@ -66,6 +66,7 @@ type RunResult struct {
 	STRMUpdated        int
 	STRMDeleted        int
 	STRMSkipped        int
+	STRMRenamed        int
 	Duration           time.Duration
 	// Organizer results
 	OrgProcessed int
@@ -206,9 +207,14 @@ func (s *Service) Run(dryRun bool) (*RunResult, error) {
 	result.STRMUpdated = strmResult.Updated
 	result.STRMDeleted = strmResult.Deleted
 	result.STRMSkipped = strmResult.Skipped
+	result.STRMRenamed = strmResult.Renamed
 	if logger.IsInfoEnabled() {
-		s.logger.Info().Msgf("strm_results | created=%d updated=%d removed=%d unchanged=%d tracked=%d",
-			result.STRMAdded, result.STRMUpdated, result.STRMDeleted, result.STRMSkipped, strmResult.Tracked)
+		renamedPart := ""
+		if strmResult.Renamed > 0 {
+			renamedPart = fmt.Sprintf(" renamed=%d", strmResult.Renamed)
+		}
+		s.logger.Info().Msgf("strm_results | created=%d updated=%d removed=%d unchanged=%d%s tracked=%d",
+			result.STRMAdded, result.STRMUpdated, result.STRMDeleted, result.STRMSkipped, renamedPart, strmResult.Tracked)
 		if logger.IsTTY() {
 			fmt.Println()
 		}
@@ -220,6 +226,7 @@ func (s *Service) Run(dryRun bool) (*RunResult, error) {
 		Int("strm_added", result.STRMAdded).
 		Int("strm_updated", result.STRMUpdated).
 		Int("strm_deleted", result.STRMDeleted).
+		Int("strm_renamed", result.STRMRenamed).
 		Dur("duration", result.Duration).
 		Msg("Sync completed")
 
