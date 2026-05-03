@@ -32,9 +32,33 @@ type MediaInfoResult struct {
 
 // MediaInfoDetails holds the nested video/audio/subtitle stream metadata.
 type MediaInfoDetails struct {
-	Video     map[string]MediaVideoStream    `json:"video"`
-	Audio     map[string]MediaAudioStream    `json:"audio"`
-	Subtitles map[string]MediaSubtitleStream `json:"subtitles"`
+	Video     map[string]MediaVideoStream `json:"video"`
+	Audio     map[string]MediaAudioStream `json:"audio"`
+	Subtitles subtitleMap                 `json:"subtitles"`
+}
+
+// subtitleMap handles RD's inconsistent subtitle format (object or array).
+type subtitleMap map[string]MediaSubtitleStream
+
+func (s *subtitleMap) UnmarshalJSON(data []byte) error {
+	// RD sometimes returns subtitles as an array, sometimes as an object.
+	// Try object first, then array.
+	var obj map[string]MediaSubtitleStream
+	if err := json.Unmarshal(data, &obj); err == nil {
+		*s = obj
+		return nil
+	}
+	var arr []map[string]MediaSubtitleStream
+	if err := json.Unmarshal(data, &arr); err == nil {
+		*s = make(map[string]MediaSubtitleStream)
+		for _, item := range arr {
+			for k, v := range item {
+				(*s)[k] = v
+			}
+		}
+		return nil
+	}
+	return fmt.Errorf("subtitles: expected object or array, got %s", string(data))
 }
 
 // MediaVideoStream mirrors RD's video stream detail.
