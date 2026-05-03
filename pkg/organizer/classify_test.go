@@ -39,7 +39,7 @@ func TestGetContentTypeAndPath_TableDriven(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			nameNoExt := strings.TrimSuffix(tt.filename, ".strm")
 			parsed := ptt.Parse(nameNoExt)
-			contentType, destPath := org.getContentTypeAndPath(parsed, nil, tt.filename, tt.rdID, nil)
+			contentType, destPath := org.getContentTypeAndPath(parsed, nil, tt.filename, tt.rdID, nil, "Movies/Inception.2010.1080p")
 
 			if contentType != tt.wantType {
 				t.Errorf("type = %q, want %q", contentType, tt.wantType)

@@ -809,6 +809,13 @@ func (s *Service) matchTMDB(candidates []realdebrid.STRMCandidate) {
 	}
 
 	for _, g := range groups {
+		// Skip adult folders — never match against TMDB
+		if s.config.IsAdultFolder(g.folder) {
+			s.logger.Debug().Str("folder", g.folder).Msg("TMDB skipped (adult folder)")
+			skipped += len(g.candidates)
+			continue
+		}
+
 		// Check if any candidate in this group already has a TMDB match
 		allMatched := true
 		anyMatched := false
@@ -912,12 +919,13 @@ func (s *Service) runOrganizer() OrganizerResult {
 	s.logger.Debug().Msg("Running library organizer...")
 
 	org := organizer.New(organizer.Config{
-		BaseDir:      s.config.Path,
-		OrganizedDir: s.config.OrganizedDir,
-		OutputDir:    s.config.OutputDir,
-		TrackingFile: s.config.TrackingFile,
-		CacheDir:     s.config.CacheDir,
-		Logger:       s.logger,
+		BaseDir:       s.config.Path,
+		OrganizedDir:  s.config.OrganizedDir,
+		OutputDir:     s.config.OutputDir,
+		TrackingFile:  s.config.TrackingFile,
+		CacheDir:      s.config.CacheDir,
+		AdultPatterns: s.config.AdultPatterns,
+		Logger:        s.logger,
 	})
 
 	result := org.Run()

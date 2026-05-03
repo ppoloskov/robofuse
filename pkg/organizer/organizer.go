@@ -52,24 +52,26 @@ type TrackingEntry struct {
 
 // Organizer handles media file organization.
 type Organizer struct {
-	baseDir      string
-	libraryDir   string
-	organizedDir string
-	dbPath       string
-	trackingPath string
-	parser       *ptt.Parser
-	logger       zerolog.Logger
-	db           map[string]FileEntry
+	baseDir       string
+	libraryDir    string
+	organizedDir  string
+	dbPath        string
+	trackingPath  string
+	parser        *ptt.Parser
+	logger        zerolog.Logger
+	db            map[string]FileEntry
+	adultPatterns []string
 }
 
 // Config holds organizer configuration.
 type Config struct {
-	BaseDir      string
-	OrganizedDir string
-	OutputDir    string
-	TrackingFile string
-	CacheDir     string
-	Logger       zerolog.Logger
+	BaseDir       string
+	OrganizedDir  string
+	OutputDir     string
+	TrackingFile  string
+	CacheDir      string
+	AdultPatterns []string
+	Logger        zerolog.Logger
 }
 
 // New creates a new Organizer instance.
@@ -101,11 +103,12 @@ func New(cfg Config) *Organizer {
 		baseDir:      cfg.BaseDir,
 		libraryDir:   libraryDir,
 		organizedDir: organizedDir,
-		dbPath:       filepath.Join(cacheDir, "organizer_db.json"),
-		trackingPath: trackingPath,
-		parser:       parser,
-		logger:       cfg.Logger,
-		db:           make(map[string]FileEntry),
+		dbPath:        filepath.Join(cacheDir, "organizer_db.json"),
+		trackingPath:  trackingPath,
+		parser:        parser,
+		logger:        cfg.Logger,
+		db:            make(map[string]FileEntry),
+		adultPatterns: cfg.AdultPatterns,
 	}
 }
 
@@ -215,7 +218,13 @@ func (o *Organizer) findExistingSeriesFolder(baseFolder, title string, year int)
 
 // getContentTypeAndPath determines content type and destination path.
 // Uses TMDB official title when available (via tracking metadata).
-func (o *Organizer) getContentTypeAndPath(parsed, parentParsed *ptt.TorrentInfo, filename, rdID string, meta *TrackingEntry) (string, string) {
+// Routes adult content to X/ folder based on AdultPatterns config.
+func (o *Organizer) getContentTypeAndPath(parsed, parentParsed *ptt.TorrentInfo, filename, rdID string, meta *TrackingEntry, sourceRelPath string) (string, string) {
+	// Check adult patterns first — route to X/ folder, skip normal classification
+	if o.isAdultPath(sourceRelPath) {
+		return "adult", o.buildAdultPath(sourceRelPath, filename, rdID)
+	}
+
 	// Extract info from filename
 	fTitle := parsed.Title
 	fYear := parsed.Year
@@ -388,6 +397,37 @@ func (o *Organizer) getContentTypeAndPath(parsed, parentParsed *ptt.TorrentInfo,
 	return finalType, destPath
 }
 
+// isAdultPath checks if any adult pattern matches the source path's folder.
+func (o *Organizer) isAdultPath(sourceRelPath string) bool {
+	folder := strings.ToLower(filepath.Dir(sourceRelPath))
+	for _, p := range o.adultPatterns {
+		if p == "" {
+			continue
+		}
+		if strings.Contains(folder, strings.ToLower(p)) {
+			return true
+		}
+	}
+	return false
+}
+
+// buildAdultPath builds a destination path under X/ using the original
+// folder name (no TMDB renaming) and the original filename.
+func (o *Organizer) buildAdultPath(sourceRelPath, filename, rdID string) string {
+	folderName := filepath.Base(filepath.Dir(sourceRelPath))
+	cleanFolder := cleanFilename(folderName)
+
+	ext := realSTRMExt(filename)
+	idSuffix := ""
+	if rdID != "" {
+		idSuffix = fmt.Sprintf(" [%s]", rdID)
+	}
+	baseName := strings.TrimSuffix(filepath.Base(filename), filepath.Ext(filename))
+	cleanFile := cleanFilename(fmt.Sprintf("%s%s%s", baseName, idSuffix, ext))
+
+	return filepath.Join("X", cleanFolder, cleanFile)
+}
+
 // copyFile copies a file from src to dst.
 func copyFile(src, dst string) error {
 	sourceFile, err := os.Open(src)
@@ -470,7 +510,7 @@ func (o *Organizer) Run() Result {
 		rdID := getRDIDFromLink(meta.Link)
 
 		// Determine destination
-		contentType, destRelPath := o.getContentTypeAndPath(parsed, parentParsed, filename, rdID, &meta)
+		contentType, destRelPath := o.getContentTypeAndPath(parsed, parentParsed, filename, rdID, &meta, relPath)
 		destFullPath := filepath.Join(o.organizedDir, destRelPath)
 
 		// Copy STRM file

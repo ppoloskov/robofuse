@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 )
 
 // config.go loads, validates, and exposes application configuration.
@@ -42,7 +43,8 @@ type Config struct {
 	FFProbeTimeout int   `json:"ffprobe_timeout"` // timeout in seconds (default 15)
 
 	// Content filtering
-	ExcludeKeywordsFile string `json:"exclude_keywords_file"` // path to file with one keyword per line (case-insensitive)
+	ExcludeKeywordsFile string   `json:"exclude_keywords_file"` // path to file with one keyword per line (case-insensitive)
+	AdultPatterns       []string `json:"adult_patterns"`        // torrent folder substrings that route to X/ folder, skip TMDB
 
 	// TMDB integration
 	TMDBAPIKey string `json:"tmdb_api_key"` // TheMovieDB API v3 key for metadata + renaming
@@ -163,6 +165,19 @@ func (c *Config) Validate() error {
 // SetInstance sets the global config instance.
 func SetInstance(cfg *Config) {
 	instance = cfg
+}
+
+// IsAdultFolder returns true if the folder name matches any adult pattern.
+func (c *Config) IsAdultFolder(folderName string) bool {
+	for _, p := range c.AdultPatterns {
+		if p == "" {
+			continue
+		}
+		if strings.Contains(strings.ToLower(folderName), strings.ToLower(p)) {
+			return true
+		}
+	}
+	return false
 }
 
 // MinFileSizeBytes returns minimum file size in bytes
