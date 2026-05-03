@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 )
 
@@ -77,13 +78,18 @@ func defaults() *Config {
 	}
 }
 
-// Load reads configuration from a JSON file
+// Load reads configuration from a JSON file. Environment variables with the
+// prefix ROBOFUSE_ override any matching config values. The config file
+// location can be set via the ROBOFUSE_CONFIG env var.
 func Load(configPath string) (*Config, error) {
 	cfg := defaults()
 
-	// Try to find config file
+	// Try to find config file — ROBOFUSE_CONFIG env var takes priority
+	// over the default search paths.
+	envConfigPath := os.Getenv("ROBOFUSE_CONFIG")
 	paths := []string{
 		configPath,
+		envConfigPath,
 		"config.json",
 		"/data/config.json",
 		filepath.Join(os.Getenv("HOME"), ".config/robofuse/config.json"),
@@ -114,6 +120,10 @@ func Load(configPath string) (*Config, error) {
 	}
 
 	cfg.Path = filepath.Dir(configFile)
+
+	// Apply environment variable overrides (ROBOFUSE_*).
+	// These take precedence over file-based values.
+	cfg.applyEnvOverrides()
 
 	// Validate
 	if err := cfg.Validate(); err != nil {
@@ -164,4 +174,58 @@ func SetInstance(cfg *Config) {
 // MinFileSizeBytes returns minimum file size in bytes
 func (c *Config) MinFileSizeBytes() int64 {
 	return int64(c.MinFileSizeMB) * 1024 * 1024
+}
+
+// applyEnvOverrides applies ROBOFUSE_* environment variables on top of the
+// file-loaded config. Only set (non-empty) variables override; unset variables
+// leave the existing value untouched.
+func (c *Config) applyEnvOverrides() {
+	// Helper closures to keep the code compact.
+	envStr := func(key string, target *string) {
+		if v := os.Getenv(key); v != "" {
+			*target = v
+		}
+	}
+	envInt := func(key string, target *int) {
+		if v := os.Getenv(key); v != "" {
+			if n, err := strconv.Atoi(v); err == nil {
+				*target = n
+			}
+		}
+	}
+	envBool := func(key string, target *bool) {
+		if v := os.Getenv(key); v != "" {
+			if b, err := strconv.ParseBool(v); err == nil {
+				*target = b
+			}
+		}
+	}
+
+	// Core settings
+	envStr("ROBOFUSE_TOKEN", &c.Token)
+	envStr("ROBOFUSE_OUTPUT_DIR", &c.OutputDir)
+	envStr("ROBOFUSE_ORGANIZED_DIR", &c.OrganizedDir)
+	envStr("ROBOFUSE_CACHE_DIR", &c.CacheDir)
+	envInt("ROBOFUSE_CONCURRENT_REQUESTS", &c.ConcurrentRequests)
+	envInt("ROBOFUSE_GENERAL_RATE_LIMIT", &c.GeneralRateLimit)
+	envInt("ROBOFUSE_TORRENTS_RATE_LIMIT", &c.TorrentsRateLimit)
+	envBool("ROBOFUSE_WATCH_MODE", &c.WatchMode)
+	envInt("ROBOFUSE_WATCH_MODE_INTERVAL", &c.WatchModeInterval)
+	envBool("ROBOFUSE_REPAIR_TORRENTS", &c.RepairTorrents)
+	envInt("ROBOFUSE_MIN_FILE_SIZE_MB", &c.MinFileSizeMB)
+	envStr("ROBOFUSE_LOG_LEVEL", &c.LogLevel)
+	envBool("ROBOFUSE_PTT_RENAME", &c.PttRename)
+
+	// Tracking
+	envStr("ROBOFUSE_TRACKING_FILE", &c.TrackingFile)
+	envInt("ROBOFUSE_FILE_EXPIRY_DAYS", &c.FileExpiryDays)
+
+	// Retry queue
+	envStr("ROBOFUSE_RETRY_QUEUE_FILE", &c.RetryQueueFile)
+	envInt("ROBOFUSE_MAX_RETRY_ATTEMPTS", &c.MaxRetryAttempts)
+
+	// ffprobe
+	envBool("ROBOFUSE_ENABLE_FFPROBE", &c.EnableFFProbe)
+	envStr("ROBOFUSE_FFPROBE_PATH", &c.FFProbePath)
+	envInt("ROBOFUSE_FFPROBE_TIMEOUT", &c.FFProbeTimeout)
 }
