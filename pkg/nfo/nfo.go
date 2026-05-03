@@ -31,7 +31,7 @@ type Data struct {
 	Type string
 
 	// Title fields
-	Title     string // primary title
+	Title     string // primary title (TMDB official title if available)
 	ShowTitle string // series name (episodes only)
 	Year      int    // release year
 
@@ -51,6 +51,13 @@ type Data struct {
 
 	// Duration from RD (seconds), used for classification
 	DurationSeconds float64
+
+	// TMDB metadata
+	Overview string   // plot summary
+	Rating   float64  // vote average
+	Genres   []string // genre names
+	TMDBID   int      // themoviedb ID
+	IMDBID   string   // IMDB ID (movies only)
 }
 
 // Write generates an .nfo file next to the given .strm file.
@@ -90,25 +97,38 @@ func strmPathToNFOPath(strmPath string) string {
 // ---------------------------------------------------------------------------
 
 type xmlMovie struct {
-	XMLName       xml.Name `xml:"movie"`
-	Title         string   `xml:"title,omitempty"`
-	OriginalTitle string   `xml:"originaltitle,omitempty"`
-	Year          int      `xml:"year,omitempty"`
-	FileInfo      *xmlFileInfo `xml:"fileinfo,omitempty"`
-	Thumb         string   `xml:"thumb,omitempty"`   // poster
-	Fanart        string   `xml:"fanart,omitempty"`   // backdrop
+	XMLName       xml.Name       `xml:"movie"`
+	Title         string         `xml:"title,omitempty"`
+	OriginalTitle string         `xml:"originaltitle,omitempty"`
+	Year          int            `xml:"year,omitempty"`
+	Plot          string         `xml:"plot,omitempty"`
+	Rating        float64        `xml:"rating,omitempty"`
+	Genres        []string       `xml:"genre,omitempty"`
+	UniqueIDs     []xmlUniqueID  `xml:"uniqueid,omitempty"`
+	FileInfo      *xmlFileInfo   `xml:"fileinfo,omitempty"`
+	Thumb         string         `xml:"thumb,omitempty"`
+	Fanart        string         `xml:"fanart,omitempty"`
 }
 
 type xmlEpisode struct {
-	XMLName   xml.Name `xml:"episodedetails"`
-	Title     string   `xml:"title,omitempty"`
-	ShowTitle string   `xml:"showtitle,omitempty"`
-	Season    int      `xml:"season,omitempty"`
-	Episode   int      `xml:"episode,omitempty"`
-	Year      int      `xml:"year,omitempty"`
-	FileInfo  *xmlFileInfo `xml:"fileinfo,omitempty"`
-	Thumb     string   `xml:"thumb,omitempty"`
-	Fanart    string   `xml:"fanart,omitempty"`
+	XMLName   xml.Name       `xml:"episodedetails"`
+	Title     string         `xml:"title,omitempty"`
+	ShowTitle string         `xml:"showtitle,omitempty"`
+	Season    int            `xml:"season,omitempty"`
+	Episode   int            `xml:"episode,omitempty"`
+	Year      int            `xml:"year,omitempty"`
+	Plot      string         `xml:"plot,omitempty"`
+	Rating    float64        `xml:"rating,omitempty"`
+	Genres    []string       `xml:"genre,omitempty"`
+	UniqueIDs []xmlUniqueID  `xml:"uniqueid,omitempty"`
+	FileInfo  *xmlFileInfo   `xml:"fileinfo,omitempty"`
+	Thumb     string         `xml:"thumb,omitempty"`
+	Fanart    string         `xml:"fanart,omitempty"`
+}
+
+type xmlUniqueID struct {
+	Type string `xml:"type,attr"`
+	ID   string `xml:",innerxml"`
 }
 
 type xmlFileInfo struct {
@@ -157,20 +177,36 @@ func generateXML(data *Data) ([]byte, error) {
 			Season:    data.Season,
 			Episode:   data.Episode,
 			Year:      data.Year,
+			Plot:      data.Overview,
+			Rating:    data.Rating,
+			Genres:    data.Genres,
 			FileInfo:  fileInfo,
 			Thumb:     data.PosterPath,
 			Fanart:    data.BackdropPath,
 		}
+		if data.TMDBID != 0 {
+			ep.UniqueIDs = []xmlUniqueID{{Type: "tmdb", ID: fmt.Sprintf("%d", data.TMDBID)}}
+		}
 		body, err = xml.MarshalIndent(ep, "", "  ")
 	default:
-		// movie (default)
 		mov := xmlMovie{
 			Title:         data.Title,
 			OriginalTitle: data.Title,
 			Year:          data.Year,
+			Plot:          data.Overview,
+			Rating:        data.Rating,
+			Genres:        data.Genres,
 			FileInfo:      fileInfo,
 			Thumb:         data.PosterPath,
 			Fanart:        data.BackdropPath,
+		}
+		if data.TMDBID != 0 || data.IMDBID != "" {
+			if data.TMDBID != 0 {
+				mov.UniqueIDs = append(mov.UniqueIDs, xmlUniqueID{Type: "tmdb", ID: fmt.Sprintf("%d", data.TMDBID)})
+			}
+			if data.IMDBID != "" {
+				mov.UniqueIDs = append(mov.UniqueIDs, xmlUniqueID{Type: "imdb", ID: data.IMDBID})
+			}
 		}
 		body, err = xml.MarshalIndent(mov, "", "  ")
 	}

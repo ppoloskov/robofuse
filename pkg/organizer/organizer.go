@@ -42,6 +42,10 @@ type TrackingEntry struct {
 	Link        string `json:"link"`
 	DownloadURL string `json:"download_url,omitempty"`
 	LastChecked string `json:"last_checked,omitempty"`
+	// TMDB fields (from file_tracking.json)
+	TMDBTitle string `json:"tmdb_title,omitempty"`
+	TMDBYear  int    `json:"tmdb_year,omitempty"`
+	TMDBType  string `json:"tmdb_type,omitempty"`
 }
 
 // Organizer handles media file organization.
@@ -208,7 +212,8 @@ func (o *Organizer) findExistingSeriesFolder(baseFolder, title string, year int)
 }
 
 // getContentTypeAndPath determines content type and destination path.
-func (o *Organizer) getContentTypeAndPath(parsed, parentParsed *ptt.TorrentInfo, filename, rdID string) (string, string) {
+// Uses TMDB official title when available (via tracking metadata).
+func (o *Organizer) getContentTypeAndPath(parsed, parentParsed *ptt.TorrentInfo, filename, rdID string, meta *TrackingEntry) (string, string) {
 	// Extract info from filename
 	fTitle := parsed.Title
 	fYear := parsed.Year
@@ -292,6 +297,19 @@ func (o *Organizer) getContentTypeAndPath(parsed, parentParsed *ptt.TorrentInfo,
 			year = fYear
 		} else {
 			year = pYear
+		}
+	}
+
+	// TMDB override: if we have an official match, use its title, year, and type
+	if meta != nil && meta.TMDBTitle != "" {
+		title = meta.TMDBTitle
+		if meta.TMDBYear > 0 {
+			year = meta.TMDBYear
+		}
+		if meta.TMDBType == "show" {
+			finalType = "series"
+		} else if meta.TMDBType == "movie" {
+			finalType = "movie"
 		}
 	}
 
@@ -450,7 +468,7 @@ func (o *Organizer) Run() Result {
 		rdID := getRDIDFromLink(meta.Link)
 
 		// Determine destination
-		contentType, destRelPath := o.getContentTypeAndPath(parsed, parentParsed, filename, rdID)
+		contentType, destRelPath := o.getContentTypeAndPath(parsed, parentParsed, filename, rdID, &meta)
 		destFullPath := filepath.Join(o.organizedDir, destRelPath)
 
 		// Copy STRM file

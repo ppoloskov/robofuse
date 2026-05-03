@@ -468,6 +468,34 @@ func (s *Service) writeNFO(strmRelPath string, candidate realdebrid.STRMCandidat
 		data.BackdropPath = ft.RDBackdropPath
 	}
 
+	// TMDB enrichment: official title, overview, rating, genres, poster/backdrop
+	if hasTracking && ft.TMDBID != 0 {
+		data.TMDBID = ft.TMDBID
+		data.Overview = ft.TMDBOverview
+		data.Rating = ft.TMDBRating
+		data.Genres = ft.TMDBGenres
+		data.IMDBID = ft.IMDBID
+
+		// Use TMDB official title — overrides PTT-derived title
+		if ft.TMDBTitle != "" {
+			if data.Type == "episode" {
+				data.ShowTitle = ft.TMDBTitle
+			} else {
+				data.Title = ft.TMDBTitle
+			}
+		}
+		if ft.TMDBYear > 0 {
+			data.Year = ft.TMDBYear
+		}
+		// TMDB poster/backdrop take priority over RD's
+		if ft.TMDBPoster != "" {
+			data.PosterPath = ft.TMDBPoster
+		}
+		if ft.TMDBBackdrop != "" {
+			data.BackdropPath = ft.TMDBBackdrop
+		}
+	}
+
 	if err := nfo.Write(fullPath, data); err != nil {
 		s.logger.Debug().Err(err).Str("path", strmRelPath).Msg("Failed to write NFO")
 	}
@@ -530,6 +558,38 @@ func (s *Service) refreshNFOWithMedia(strmRelPath string, media *probe.MediaInfo
 	}
 
 	_ = ft // keep reference
+
+	// TMDB enrichment
+	if ft.TMDBID != 0 {
+		data.TMDBID = ft.TMDBID
+		data.Overview = ft.TMDBOverview
+		data.Rating = ft.TMDBRating
+		data.Genres = ft.TMDBGenres
+		data.IMDBID = ft.IMDBID
+		if ft.TMDBTitle != "" {
+			if data.Type == "episode" {
+				data.ShowTitle = ft.TMDBTitle
+			} else {
+				data.Title = ft.TMDBTitle
+			}
+		}
+		if ft.TMDBYear > 0 {
+			data.Year = ft.TMDBYear
+		}
+		if ft.TMDBPoster != "" {
+			data.PosterPath = ft.TMDBPoster
+		}
+		if ft.TMDBBackdrop != "" {
+			data.BackdropPath = ft.TMDBBackdrop
+		}
+	}
+	// Fall back to RD poster/backdrop if no TMDB images
+	if data.PosterPath == "" && ft.RDPosterPath != "" {
+		data.PosterPath = ft.RDPosterPath
+	}
+	if data.BackdropPath == "" && ft.RDBackdropPath != "" {
+		data.BackdropPath = ft.RDBackdropPath
+	}
 
 	fullPath := filepath.Join(s.config.OutputDir, strmRelPath)
 	if err := nfo.Write(fullPath, data); err != nil {
