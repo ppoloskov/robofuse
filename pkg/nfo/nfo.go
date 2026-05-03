@@ -44,6 +44,13 @@ type Data struct {
 
 	// Stream metadata from ffprobe (optional)
 	Media *probe.MediaInfo
+
+	// RD media info (poster/backdrop image URLs)
+	PosterPath   string
+	BackdropPath string
+
+	// Duration from RD (seconds), used for classification
+	DurationSeconds float64
 }
 
 // Write generates an .nfo file next to the given .strm file.
@@ -88,6 +95,8 @@ type xmlMovie struct {
 	OriginalTitle string   `xml:"originaltitle,omitempty"`
 	Year          int      `xml:"year,omitempty"`
 	FileInfo      *xmlFileInfo `xml:"fileinfo,omitempty"`
+	Thumb         string   `xml:"thumb,omitempty"`   // poster
+	Fanart        string   `xml:"fanart,omitempty"`   // backdrop
 }
 
 type xmlEpisode struct {
@@ -98,6 +107,8 @@ type xmlEpisode struct {
 	Episode   int      `xml:"episode,omitempty"`
 	Year      int      `xml:"year,omitempty"`
 	FileInfo  *xmlFileInfo `xml:"fileinfo,omitempty"`
+	Thumb     string   `xml:"thumb,omitempty"`
+	Fanart    string   `xml:"fanart,omitempty"`
 }
 
 type xmlFileInfo struct {
@@ -147,6 +158,8 @@ func generateXML(data *Data) ([]byte, error) {
 			Episode:   data.Episode,
 			Year:      data.Year,
 			FileInfo:  fileInfo,
+			Thumb:     data.PosterPath,
+			Fanart:    data.BackdropPath,
 		}
 		body, err = xml.MarshalIndent(ep, "", "  ")
 	default:
@@ -156,6 +169,8 @@ func generateXML(data *Data) ([]byte, error) {
 			OriginalTitle: data.Title,
 			Year:          data.Year,
 			FileInfo:      fileInfo,
+			Thumb:         data.PosterPath,
+			Fanart:        data.BackdropPath,
 		}
 		body, err = xml.MarshalIndent(mov, "", "  ")
 	}

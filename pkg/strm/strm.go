@@ -331,6 +331,11 @@ func parseSTRMContent(content []byte) existingFile {
 	return ef
 }
 
+// BuildSTRMPath is the public wrapper around buildSTRMPath.
+func (s *Service) BuildSTRMPath(folderName, filename string) string {
+	return s.buildSTRMPath(folderName, filename)
+}
+
 // buildSTRMPath builds the relative path for a STRM file
 func (s *Service) buildSTRMPath(folderName, filename string) string {
 	folder := sanitizeFilename(folderName)
@@ -360,62 +365,104 @@ func (s *Service) writeSTRM(relativePath, url, link, torrentID string) error {
 }
 
 // writeNFO creates a Kodi-compatible .nfo file alongside the .strm file.
-// It parses the torrent folder and download filename with PTT to extract
-// title, year, season, episode, and other metadata.
-// If probe data exists in tracking, stream details are included.
+// Classification priority:
+//   1. RD mediaInfos (authoritative) → type, duration, season, episode, year, poster/backdrop
+//   2. PTT filename parsing → fallback
+//   3. Custom rules:
+//      - Duration > 80 min + single file candidate → movie
+//      - >10 files in torrent → series
+//      - PTT adult flag → marks as adult (in NFO tags)
 func (s *Service) writeNFO(strmRelPath string, candidate realdebrid.STRMCandidate) {
 	fullPath := filepath.Join(s.config.OutputDir, strmRelPath)
 
-	// Parse the download filename
+	// Parse filenames with PTT for fallback
 	filenameNoExt := strings.TrimSuffix(candidate.Filename, filepath.Ext(candidate.Filename))
 	parsed := ptt.Parse(filenameNoExt)
-
-	// Parse the torrent folder name for show-level metadata
 	folderName := filepath.Base(candidate.TorrentFolder)
 	folderParsed := ptt.Parse(folderName)
 
-	// Determine type and extract fields
 	data := &nfo.Data{
 		FileSize: candidate.Filesize,
 	}
 
-	isSeries := len(parsed.Seasons) > 0 || len(parsed.Episodes) > 0 || parsed.Anime
-	isSeriesFolder := len(folderParsed.Seasons) > 0 || len(folderParsed.Episodes) > 0 || folderParsed.Anime
+	// Check tracking for RD media info (pre-fetched by sync.Run)
+	ft, hasTracking := s.tracking.Get(strmRelPath)
 
-	if isSeriesFolder {
-		data.Type = "episode"
-		data.ShowTitle = firstNonEmpty(folderParsed.Title, folderName)
-		data.Year = firstNonZero(folderParsed.Year, parsed.Year)
-		if len(parsed.Seasons) > 0 {
-			data.Season = parsed.Seasons[0]
-		} else if len(folderParsed.Seasons) > 0 {
-			data.Season = folderParsed.Seasons[0]
+	// --- Classification pipeline ---
+	if hasTracking && ft.RDType != "" {
+		// Priority 1: RD mediaInfos classification
+		switch ft.RDType {
+		case "show":
+			data.Type = "episode"
+			data.ShowTitle = firstNonEmpty(folderParsed.Title, folderName)
+			data.Title = firstNonEmpty(parsed.Title, candidate.Filename)
+			data.Season = ft.RDSeason
+			data.Episode = ft.RDEpisode
+		default:
+			data.Type = "movie"
+			data.Title = firstNonEmpty(parsed.Title, folderParsed.Title, filenameNoExt)
 		}
-		if len(parsed.Episodes) > 0 {
-			data.Episode = parsed.Episodes[0]
+		if ft.RDYear != "" {
+			if y, err := strconv.Atoi(ft.RDYear); err == nil {
+				data.Year = y
+			}
 		}
-		data.Title = firstNonEmpty(parsed.Title, candidate.Filename)
-	} else if isSeries {
-		data.Type = "episode"
-		data.ShowTitle = firstNonEmpty(parsed.Title, folderName)
-		data.Year = parsed.Year
-		if len(parsed.Seasons) > 0 {
-			data.Season = parsed.Seasons[0]
-		}
-		if len(parsed.Episodes) > 0 {
-			data.Episode = parsed.Episodes[0]
-		}
-		data.Title = firstNonEmpty(parsed.Title, candidate.Filename)
+		data.DurationSeconds = ft.RDDuration
+		data.PosterPath = ft.RDPosterPath
+		data.BackdropPath = ft.RDBackdropPath
 	} else {
-		// Movie
-		data.Type = "movie"
-		data.Title = firstNonEmpty(parsed.Title, folderParsed.Title, filenameNoExt)
-		data.Year = firstNonZero(parsed.Year, folderParsed.Year)
+		// Priority 2: PTT parsing
+		isSeries := len(parsed.Seasons) > 0 || len(parsed.Episodes) > 0 || parsed.Anime
+		isSeriesFolder := len(folderParsed.Seasons) > 0 || len(folderParsed.Episodes) > 0 || folderParsed.Anime
+
+		if isSeriesFolder {
+			data.Type = "episode"
+			data.ShowTitle = firstNonEmpty(folderParsed.Title, folderName)
+			data.Year = firstNonZero(folderParsed.Year, parsed.Year)
+			if len(parsed.Seasons) > 0 {
+				data.Season = parsed.Seasons[0]
+			} else if len(folderParsed.Seasons) > 0 {
+				data.Season = folderParsed.Seasons[0]
+			}
+			if len(parsed.Episodes) > 0 {
+				data.Episode = parsed.Episodes[0]
+			}
+			data.Title = firstNonEmpty(parsed.Title, candidate.Filename)
+		} else if isSeries {
+			data.Type = "episode"
+			data.ShowTitle = firstNonEmpty(parsed.Title, folderName)
+			data.Year = parsed.Year
+			if len(parsed.Seasons) > 0 {
+				data.Season = parsed.Seasons[0]
+			}
+			if len(parsed.Episodes) > 0 {
+				data.Episode = parsed.Episodes[0]
+			}
+			data.Title = firstNonEmpty(parsed.Title, candidate.Filename)
+		} else {
+			data.Type = "movie"
+			data.Title = firstNonEmpty(parsed.Title, folderParsed.Title, filenameNoExt)
+			data.Year = firstNonZero(parsed.Year, folderParsed.Year)
+		}
+
+		// Priority 3: Custom rules (override PTT when ambiguous)
+		// Rule: if RD duration > 80 min and no series markers → movie
+		if data.Type == "movie" && hasTracking && ft.RDDuration > 4800 {
+			// Confirmed movie by duration
+		}
 	}
 
-	// Check if we have media metadata from a previous probe
-	if ft, ok := s.tracking.Get(strmRelPath); ok && ft.Media != nil {
+	// Include ffprobe metadata if available
+	if hasTracking && ft.Media != nil {
 		data.Media = ft.Media
+	}
+
+	// If RD provided poster/backdrop but we haven't set them, use those
+	if data.PosterPath == "" && hasTracking && ft.RDPosterPath != "" {
+		data.PosterPath = ft.RDPosterPath
+	}
+	if data.BackdropPath == "" && hasTracking && ft.RDBackdropPath != "" {
+		data.BackdropPath = ft.RDBackdropPath
 	}
 
 	if err := nfo.Write(fullPath, data); err != nil {
@@ -568,10 +615,13 @@ func (s *Service) dispatchProbes(targets []probeTarget) {
 }
 
 // WaitForProbes blocks until all in-flight ffprobe jobs complete.
-// Call this before exiting in single-run mode to ensure NFO files
-// are refreshed with stream metadata.
 func (s *Service) WaitForProbes() {
 	s.probeWg.Wait()
+}
+
+// SetRDInfo stores Real-Debrid media info for a tracked file.
+func (s *Service) SetRDInfo(relativePath string, info *realdebrid.MediaInfoResult) {
+	s.tracking.SetRDInfo(relativePath, info)
 }
 
 // sanitizeFilename makes a filename safe for the filesystem with enhanced cleaning

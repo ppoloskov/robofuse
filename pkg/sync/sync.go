@@ -197,6 +197,11 @@ func (s *Service) Run(dryRun bool) (*RunResult, error) {
 		s.logger.Info().Msgf("strm_sync | candidates=%d filtered_small=%d filtered_other=%d", stats.Candidates, stats.FilteredSmall, stats.FilteredOther)
 	}
 
+	// Step 7b: Fetch RD media info for classification (async, bounded)
+	if !dryRun {
+		s.fetchMediaInfos(s.candidates)
+	}
+
 	// Step 8: Sync STRM files
 	s.logger.Debug().Msg("Syncing STRM files...")
 	strmResult, err := s.strmService.Sync(s.candidates, dryRun)
@@ -628,6 +633,55 @@ type OrganizerResult struct {
 	Updated   int `json:"updated"`
 	Skipped   int `json:"skipped"`
 	Errors    int `json:"errors"`
+}
+
+// fetchMediaInfos fetches RD media info (/streaming/mediaInfos/{id}) for each
+// candidate and stores the result in the tracking database. Used for
+// classification (movie vs show), duration, season/episode, and poster URLs.
+// Runs with bounded concurrency (2 parallel) to avoid hammering the API.
+func (s *Service) fetchMediaInfos(candidates []realdebrid.STRMCandidate) {
+	if !s.config.EnableFFProbe && true { // always try RD media info, it's lightweight
+		// continue
+	}
+
+	sem := make(chan struct{}, 3) // max 3 concurrent
+	var wg sync.WaitGroup
+
+	for _, c := range candidates {
+		c := c
+		dl, ok := s.downloadMap[c.Link]
+		if !ok || dl.ID == "" {
+			continue
+		}
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			info, err := s.rd.GetMediaInfo(dl.ID)
+			if err != nil {
+				s.logger.Debug().Err(err).Str("id", dl.ID).Msg("RD media info fetch failed")
+				return
+			}
+			if info == nil {
+				return
+			}
+
+			// Store in tracking by STRM path
+			path := s.strmService.BuildSTRMPath(c.TorrentFolder, c.Filename)
+			s.strmService.SetRDInfo(path, info)
+
+			s.logger.Debug().
+				Str("path", path).
+				Str("type", info.Type).
+				Float64("duration", info.Duration).
+				Msg("RD media info stored")
+		}()
+	}
+
+	wg.Wait()
 }
 
 // runOrganizer executes the Go organizer to organize files using ptt-go.

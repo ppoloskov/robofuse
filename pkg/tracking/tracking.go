@@ -8,6 +8,7 @@ import (
 
 	"github.com/robofuse/robofuse/internal/logger"
 	"github.com/robofuse/robofuse/pkg/probe"
+	"github.com/robofuse/robofuse/pkg/realdebrid"
 	"github.com/rs/zerolog"
 )
 
@@ -22,6 +23,16 @@ type FileTracking struct {
 	LastChecked  time.Time        `json:"last_checked"`
 	TorrentID    string           `json:"torrent_id"`
 	Media        *probe.MediaInfo `json:"media,omitempty"` // ffprobe metadata (may be nil)
+
+	// RD media info (from /streaming/mediaInfos/{id})
+	RDType         string  `json:"rd_type,omitempty"`          // "movie", "show", "audio"
+	RDSeason       int     `json:"rd_season,omitempty"`
+	RDEpisode      int     `json:"rd_episode,omitempty"`
+	RDYear         string  `json:"rd_year,omitempty"`
+	RDDuration     float64 `json:"rd_duration,omitempty"`      // seconds
+	RDBitrate      int     `json:"rd_bitrate,omitempty"`
+	RDPosterPath   string  `json:"rd_poster_path,omitempty"`   // poster image URL
+	RDBackdropPath string  `json:"rd_backdrop_path,omitempty"` // backdrop image URL
 }
 
 // Service manages file tracking persistence
@@ -124,7 +135,6 @@ func (s *Service) GetByLink(link string) (*FileTracking, bool) {
 }
 
 // SetMedia stores ffprobe metadata for a tracked file.
-// Does nothing if the path is not tracked.
 func (s *Service) SetMedia(relativePath string, media *probe.MediaInfo) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -133,6 +143,37 @@ func (s *Service) SetMedia(relativePath string, media *probe.MediaInfo) {
 		entry.Media = media
 		s.logger.Debug().Str("path", relativePath).Msg("Stored media metadata")
 	}
+}
+
+// SetRDInfo stores Real-Debrid media info (type, duration, poster, etc.) for a tracked file.
+func (s *Service) SetRDInfo(relativePath string, info *realdebrid.MediaInfoResult) {
+	if info == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	entry, exists := s.data[relativePath]
+	if !exists {
+		return
+	}
+
+	entry.RDType = info.Type
+	entry.RDSeason = info.SeasonInt()
+	entry.RDEpisode = info.EpisodeInt()
+	entry.RDYear = info.Year
+	entry.RDDuration = info.Duration
+	entry.RDBitrate = info.Bitrate
+	if info.PosterPath != "" {
+		entry.RDPosterPath = info.PosterPath
+	}
+	if info.BackdropPath != "" {
+		entry.RDBackdropPath = info.BackdropPath
+	}
+	s.logger.Debug().
+		Str("path", relativePath).
+		Str("rd_type", info.Type).
+		Msg("Stored RD media info")
 }
 
 // MovePath re-keys a tracking entry from oldPath to newPath.
