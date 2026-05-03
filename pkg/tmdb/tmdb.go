@@ -140,7 +140,7 @@ type MatchResult struct {
 // ---------------------------------------------------------------------------
 
 // SearchMovie searches for a movie by title and optional year.
-// Returns the best match (highest popularity), or nil if none found.
+// Prefers exact title matches over popularity to avoid wrong results.
 func (c *Client) SearchMovie(title string, year int) (*SearchMovieResult, error) {
 	q := gourl.Values{}
 	q.Set("query", title)
@@ -156,27 +156,24 @@ func (c *Client) SearchMovie(title string, year int) (*SearchMovieResult, error)
 		return nil, nil
 	}
 
-	// Pick the best match: prefer exact year match, then highest popularity
-	var best *SearchMovieResult
-	for i := range resp.Results {
-		r := &resp.Results[i]
-		if year > 0 && r.ReleaseDate != "" {
-			if releaseYear(r.ReleaseDate) == year {
-				// Exact year match — take it
-				return r, nil
-			}
-		}
-		if best == nil || r.Popularity > best.Popularity {
-			best = r
-		}
+	// Score: exact year match > title similarity > popularity
+	best := scoreResults(resp.Results, title, year, func(r SearchMovieResult) (string, int) {
+		return r.Title, releaseYear(r.ReleaseDate)
+	})
+	if best == nil {
+		return nil, nil
 	}
 	return best, nil
 }
 
-// SearchTV searches for a TV show by name.
-func (c *Client) SearchTV(name string) (*SearchTVResult, error) {
+// SearchTV searches for a TV show by name and optional year.
+// Prefers exact title matches over popularity.
+func (c *Client) SearchTV(name string, year int) (*SearchTVResult, error) {
 	q := gourl.Values{}
 	q.Set("query", name)
+	if year > 0 {
+		q.Set("first_air_date_year", strconv.Itoa(year))
+	}
 
 	var resp searchTVResponse
 	if err := c.get("/search/tv", q, &resp); err != nil {
@@ -186,14 +183,82 @@ func (c *Client) SearchTV(name string) (*SearchTVResult, error) {
 		return nil, nil
 	}
 
-	// Return most popular match
-	best := &resp.Results[0]
-	for i := 1; i < len(resp.Results); i++ {
-		if resp.Results[i].Popularity > best.Popularity {
-			best = &resp.Results[i]
-		}
+	best := scoreResults(resp.Results, name, year, func(r SearchTVResult) (string, int) {
+		return r.Name, releaseYear(r.FirstAirDate)
+	})
+	if best == nil {
+		return nil, nil
 	}
 	return best, nil
+}
+
+// scoreResults picks the best match from TMDB search results.
+// Priority: 1) exact year match, 2) exact title match (case-insensitive),
+// 3) highest popularity. Rejects results whose title doesn't contain
+// the search query at all.
+func scoreResults[T any](results []T, query string, year int, getInfo func(T) (string, int)) *T {
+	queryLower := strings.ToLower(strings.TrimSpace(query))
+
+	type scored struct {
+		idx   int
+		score int // higher = better
+	}
+	var best *scored
+
+	for i := range results {
+		title, resultYear := getInfo(results[i])
+		titleLower := strings.ToLower(strings.TrimSpace(title))
+
+		// Reject if titles share no common words (e.g. "Hilda Hurricane" vs "Hilda")
+		if !titlesShareWord(queryLower, titleLower) {
+			continue
+		}
+
+		s := 0
+		// Exact year match = +100
+		if year > 0 && resultYear == year {
+			s += 100
+		}
+		// Exact title match = +50
+		if titleLower == queryLower {
+			s += 50
+		} else if strings.Contains(titleLower, queryLower) {
+			s += 25
+		}
+
+		if best == nil || s > best.score {
+			best = &scored{idx: i, score: s}
+		}
+	}
+
+	if best == nil {
+		// Fallback: return first result
+		if len(results) > 0 {
+			r := results[0]
+			return &r
+		}
+		return nil
+	}
+	r := results[best.idx]
+	return &r
+}
+
+// titlesShareWord returns true if the two titles share at least one word.
+// Prevents "Hilda Hurricane" from matching "Hilda" when the user searches for
+// the TV series — "Hilda" and "Hurricane" are separate words, but we want
+// exact or near-exact matches.
+func titlesShareWord(query, title string) bool {
+	queryWords := strings.Fields(query)
+	titleWords := strings.Fields(title)
+	for _, qw := range queryWords {
+		for _, tw := range titleWords {
+			if qw == tw {
+				return true
+			}
+		}
+	}
+	// If query is a single word and appears anywhere in title, accept
+	return len(queryWords) == 1 && strings.Contains(title, query)
 }
 
 // GetMovieDetails fetches full movie details.
@@ -232,7 +297,7 @@ func (c *Client) Match(mediaType, title string, year int) (*MatchResult, error) 
 		return movieToMatch(details), nil
 
 	case "show":
-		sr, err := c.SearchTV(title)
+		sr, err := c.SearchTV(title, year)
 		if err != nil || sr == nil {
 			return nil, err
 		}

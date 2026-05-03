@@ -52,34 +52,35 @@ func (f *flexString) UnmarshalJSON(data []byte) error {
 func (f flexString) String() string { return string(f) }
 
 // MediaInfoDetails holds the nested video/audio/subtitle stream metadata.
+// Each field uses flexStreamMap to handle RD's inconsistent array/object format.
 type MediaInfoDetails struct {
-	Video     map[string]MediaVideoStream `json:"video"`
-	Audio     map[string]MediaAudioStream `json:"audio"`
-	Subtitles subtitleMap                 `json:"subtitles"`
+	Video     flexStreamMap `json:"video"`
+	Audio     flexStreamMap `json:"audio"`
+	Subtitles flexStreamMap `json:"subtitles"`
 }
 
-// subtitleMap handles RD's inconsistent subtitle format (object or array).
-type subtitleMap map[string]MediaSubtitleStream
+// flexStreamMap handles RD's stream maps which can be objects or arrays.
+type flexStreamMap map[string]json.RawMessage
 
-func (s *subtitleMap) UnmarshalJSON(data []byte) error {
-	// RD sometimes returns subtitles as an array, sometimes as an object.
-	// Try object first, then array.
-	var obj map[string]MediaSubtitleStream
+func (f *flexStreamMap) UnmarshalJSON(data []byte) error {
+	*f = make(map[string]json.RawMessage)
+	// Try object first: {"und1": {...}, "und2": {...}}
+	var obj map[string]json.RawMessage
 	if err := json.Unmarshal(data, &obj); err == nil {
-		*s = obj
+		*f = obj
 		return nil
 	}
-	var arr []map[string]MediaSubtitleStream
+	// Try array: [{"und1": {...}}, {"und2": {...}}]
+	var arr []map[string]json.RawMessage
 	if err := json.Unmarshal(data, &arr); err == nil {
-		*s = make(map[string]MediaSubtitleStream)
 		for _, item := range arr {
 			for k, v := range item {
-				(*s)[k] = v
+				(*f)[k] = v
 			}
 		}
 		return nil
 	}
-	return fmt.Errorf("subtitles: expected object or array, got %s", string(data))
+	return fmt.Errorf("flexStreamMap: expected object or array, got %s", string(data))
 }
 
 // MediaVideoStream mirrors RD's video stream detail.
@@ -136,16 +137,22 @@ func (m *MediaInfoResult) EpisodeInt() int {
 
 // FirstVideoStream returns the first video stream detail, or nil if none.
 func (m *MediaInfoResult) FirstVideoStream() *MediaVideoStream {
-	for _, v := range m.Details.Video {
-		return &v
+	for _, raw := range m.Details.Video {
+		var vs MediaVideoStream
+		if err := json.Unmarshal(raw, &vs); err == nil {
+			return &vs
+		}
 	}
 	return nil
 }
 
 // FirstAudioStream returns the first audio stream detail, or nil if none.
 func (m *MediaInfoResult) FirstAudioStream() *MediaAudioStream {
-	for _, a := range m.Details.Audio {
-		return &a
+	for _, raw := range m.Details.Audio {
+		var as MediaAudioStream
+		if err := json.Unmarshal(raw, &as); err == nil {
+			return &as
+		}
 	}
 	return nil
 }
