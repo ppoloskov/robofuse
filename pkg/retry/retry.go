@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/robofuse/robofuse/internal/atom"
 	"github.com/robofuse/robofuse/internal/logger"
 	"github.com/rs/zerolog"
 )
@@ -146,7 +147,7 @@ func (q *Queue) Save() error {
 		return err
 	}
 
-	if err := os.WriteFile(q.queueFile, data, 0644); err != nil {
+	if err := atom.WriteFile(q.queueFile, data, 0600); err != nil {
 		return err
 	}
 

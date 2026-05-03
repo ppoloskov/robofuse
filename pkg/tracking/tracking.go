@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/robofuse/robofuse/internal/atom"
 	"github.com/robofuse/robofuse/internal/logger"
 	"github.com/robofuse/robofuse/pkg/probe"
 	"github.com/robofuse/robofuse/pkg/realdebrid"
@@ -271,7 +272,7 @@ func (s *Service) Save() error {
 		return err
 	}
 
-	if err := os.WriteFile(s.trackingFile, data, 0644); err != nil {
+	if err := atom.WriteFile(s.trackingFile, data, 0600); err != nil {
 		return err
 	}
 

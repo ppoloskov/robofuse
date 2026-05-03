@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	"github.com/robofuse/robofuse/internal/config"
 	"github.com/robofuse/robofuse/internal/logger"
@@ -174,8 +177,11 @@ func runSync(cfg *config.Config, dryRun bool) {
 func runWatch(cfg *config.Config) {
 	log := logger.Default()
 
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+
 	service := sync.New(cfg)
-	if err := service.Watch(); err != nil {
+	if err := service.Watch(ctx); err != nil {
 		log.Error().Err(err).Msg("Watch mode failed")
 		os.Exit(1)
 	}

@@ -214,7 +214,7 @@ func (c *Client) MakeRequest(req *http.Request) ([]byte, error) {
 		}
 	}()
 
-	bodyBytes, err := io.ReadAll(res.Body)
+	bodyBytes, err := io.ReadAll(io.LimitReader(res.Body, 10*1024*1024)) // 10 MB limit
 	if err != nil {
 		return nil, fmt.Errorf("reading response body: %w", err)
 	}
@@ -240,7 +240,7 @@ func (c *Client) Get(url string) (*http.Response, error) {
 func New(options ...ClientOption) *Client {
 	client := &Client{
 		maxRetries:    3,
-		skipTLSVerify: true,
+		skipTLSVerify: false,
 		retryableStatus: map[int]struct{}{
 			http.StatusTooManyRequests:     {},
 			http.StatusInternalServerError: {},

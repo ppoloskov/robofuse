@@ -1,6 +1,7 @@
 package sync
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -276,8 +277,8 @@ func (s *Service) Run(dryRun bool) (*RunResult, error) {
 
 }
 
-// Watch runs the sync process in a loop
-func (s *Service) Watch() error {
+// Watch runs the sync process in a loop until the context is cancelled.
+func (s *Service) Watch(ctx context.Context) error {
 	interval := time.Duration(s.config.WatchModeInterval) * time.Second
 
 	s.logger.Info().
@@ -285,11 +286,18 @@ func (s *Service) Watch() error {
 		Msg("Starting watch mode")
 
 	for {
+		select {
+		case <-ctx.Done():
+			s.logger.Info().Msg("Shutting down watch mode gracefully")
+			s.WaitForProbes()
+			return nil
+		default:
+		}
+
 		result, err := s.Run(false)
 		if err != nil {
 			s.logger.Error().Err(err).Msg("Sync failed")
 		} else {
-			// Print clean cycle summary
 			s.printCycleSummary(result, interval)
 		}
 
@@ -297,7 +305,13 @@ func (s *Service) Watch() error {
 			Time("next_run", time.Now().Add(interval)).
 			Msg("Waiting for next cycle")
 
-		time.Sleep(interval)
+		select {
+		case <-ctx.Done():
+			s.logger.Info().Msg("Shutting down during sleep")
+			s.WaitForProbes()
+			return nil
+		case <-time.After(interval):
+		}
 	}
 }
 

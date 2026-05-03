@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/robofuse/robofuse/internal/request"
 )
 
 // tmdb.go — TheMovieDB API v3 client for metadata matching and enrichment.
@@ -17,17 +19,18 @@ const baseURL = "https://api.themoviedb.org/3"
 
 // Client makes requests to the TMDB API.
 type Client struct {
-	apiKey     string
-	httpClient *http.Client
+	apiKey   string
+	reqClient *request.Client
 }
 
 // New creates a new TMDB client.
 func New(apiKey string) *Client {
 	return &Client{
 		apiKey: apiKey,
-		httpClient: &http.Client{
-			Timeout: 10 * time.Second,
-		},
+		reqClient: request.New(
+			request.WithTimeout(10*time.Second),
+			request.WithMaxRetries(1),
+		),
 	}
 }
 
@@ -257,7 +260,7 @@ func (c *Client) get(path string, params gourl.Values, target interface{}) error
 	req, _ := http.NewRequest(http.MethodGet, u.String(), nil)
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := c.httpClient.Do(req)
+	resp, err := c.reqClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("tmdb request: %w", err)
 	}

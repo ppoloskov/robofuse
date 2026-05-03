@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	ptt "github.com/itsrenoria/ptt-go"
+	"github.com/robofuse/robofuse/internal/atom"
 	"github.com/rs/zerolog"
 )
 
@@ -129,7 +130,7 @@ func (o *Organizer) saveDB() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(o.dbPath, data, 0644)
+	return atom.WriteFile(o.dbPath, data, 0600)
 }
 
 // loadTracking loads the file tracking database.

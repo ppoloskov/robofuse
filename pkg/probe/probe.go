@@ -96,6 +96,7 @@ func Probe(ctx context.Context, url string, timeout time.Duration, ffprobePath s
 		"-print_format", "json",
 		"-show_format",
 		"-show_streams",
+		"--",     // prevent flag injection
 		url,
 	)
 
