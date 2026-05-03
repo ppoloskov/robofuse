@@ -336,13 +336,15 @@ func (s *Service) BuildSTRMPath(folderName, filename string) string {
 	return s.buildSTRMPath(folderName, filename)
 }
 
-// buildSTRMPath builds the relative path for a STRM file
+// buildSTRMPath builds the relative path for a STRM file.
+// Preserves the original file extension before .strm so players can
+// detect the media container type (e.g. .mkv.strm, .avi.strm).
 func (s *Service) buildSTRMPath(folderName, filename string) string {
 	folder := sanitizeFilename(folderName)
 	file := sanitizeFilename(filename)
 
-	ext := filepath.Ext(file)
-	strmName := strings.TrimSuffix(file, ext) + ".strm"
+	// Keep original extension: "Movie.avi" → "Movie.avi.strm"
+	strmName := file + ".strm"
 
 	return filepath.Join(folder, strmName)
 }

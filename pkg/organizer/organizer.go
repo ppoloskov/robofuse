@@ -325,8 +325,8 @@ func (o *Organizer) getContentTypeAndPath(parsed, parentParsed *ptt.TorrentInfo,
 		idSuffix = fmt.Sprintf(" [%s]", rdID)
 	}
 
-	// Extension
-	ext := filepath.Ext(filename)
+	// Extension — preserve real extension inside .strm (e.g. .avi.strm → .avi.strm)
+	ext := realSTRMExt(filename)
 
 	var destPath string
 	if finalType == "movie" {
@@ -517,6 +517,18 @@ func (o *Organizer) cleanEmptyDirs(dir string) {
 }
 
 // fileExists checks if a file exists.
+// realSTRMExt extracts the real media extension from a .strm filename.
+// "Bluey.avi.strm" → ".avi.strm", "Movie.strm" → ".strm"
+func realSTRMExt(filename string) string {
+	if strings.HasSuffix(strings.ToLower(filename), ".strm") {
+		base := strings.TrimSuffix(filename, ".strm")
+		if real := filepath.Ext(base); real != "" {
+			return real + ".strm"
+		}
+	}
+	return filepath.Ext(filename)
+}
+
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
