@@ -31,8 +31,9 @@ type Data struct {
 	Type string
 
 	// Title fields
-	Title     string // primary title (TMDB official title if available)
-	ShowTitle string // series name (episodes only)
+	Title         string // primary title (TMDB official title if available)
+	OriginalTitle string // original language title (from TMDB)
+	ShowTitle     string // series name (episodes only)
 	Year      int    // release year
 
 	// Season/episode (episodes only; zero = omitted)
@@ -191,7 +192,7 @@ func generateXML(data *Data) ([]byte, error) {
 	default:
 		mov := xmlMovie{
 			Title:         data.Title,
-			OriginalTitle: data.Title,
+			OriginalTitle: origTitle(data.OriginalTitle, data.Title),
 			Year:          data.Year,
 			Plot:          data.Overview,
 			Rating:        data.Rating,
@@ -301,4 +302,11 @@ func parseDurationSeconds(dur string) int {
 		total = m*60 + s
 	}
 	return total
+}
+
+func origTitle(original, fallback string) string {
+	if original != "" {
+		return original
+	}
+	return fallback
 }

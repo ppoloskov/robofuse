@@ -486,6 +486,7 @@ func (s *Service) writeNFO(strmRelPath string, candidate realdebrid.STRMCandidat
 		data.Rating = ft.TMDBRating
 		data.Genres = ft.TMDBGenres
 		data.IMDBID = ft.IMDBID
+		data.OriginalTitle = ft.TMDBOriginalTitle
 
 		// Use TMDB official title — overrides PTT-derived title
 		if ft.TMDBTitle != "" {

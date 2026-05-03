@@ -61,6 +61,7 @@ type Organizer struct {
 	logger        zerolog.Logger
 	db            map[string]FileEntry
 	adultPatterns []string
+	folderRules   []FolderRule
 }
 
 // Config holds organizer configuration.
@@ -71,7 +72,15 @@ type Config struct {
 	TrackingFile  string
 	CacheDir      string
 	AdultPatterns []string
+	FolderRules   []FolderRule
 	Logger        zerolog.Logger
+}
+
+// FolderRule is a custom routing rule.
+type FolderRule struct {
+	Pattern  string
+	Target   string
+	SkipTMDB bool
 }
 
 // New creates a new Organizer instance.
@@ -109,6 +118,7 @@ func New(cfg Config) *Organizer {
 		logger:        cfg.Logger,
 		db:            make(map[string]FileEntry),
 		adultPatterns: cfg.AdultPatterns,
+		folderRules:   cfg.FolderRules,
 	}
 }
 
@@ -397,25 +407,36 @@ func (o *Organizer) getContentTypeAndPath(parsed, parentParsed *ptt.TorrentInfo,
 	return finalType, destPath
 }
 
-// isAdultPath checks if any adult pattern matches the source path's folder.
+// isAdultPath checks if any adult pattern or folder rule matches.
 func (o *Organizer) isAdultPath(sourceRelPath string) bool {
 	folder := strings.ToLower(filepath.Dir(sourceRelPath))
 	for _, p := range o.adultPatterns {
-		if p == "" {
-			continue
+		if p != "" && strings.Contains(folder, strings.ToLower(p)) {
+			return true
 		}
-		if strings.Contains(folder, strings.ToLower(p)) {
+	}
+	for _, r := range o.folderRules {
+		if r.Pattern != "" && strings.Contains(folder, strings.ToLower(r.Pattern)) {
 			return true
 		}
 	}
 	return false
 }
 
-// buildAdultPath builds a destination path under X/ using the original
-// folder name (no TMDB renaming) and the original filename.
+// buildAdultPath builds a destination path using folder rules or X/ default.
 func (o *Organizer) buildAdultPath(sourceRelPath, filename, rdID string) string {
 	folderName := filepath.Base(filepath.Dir(sourceRelPath))
 	cleanFolder := cleanFilename(folderName)
+
+	// Determine target folder from rules
+	target := "X"
+	folderLower := strings.ToLower(filepath.Dir(sourceRelPath))
+	for _, r := range o.folderRules {
+		if r.Pattern != "" && strings.Contains(folderLower, strings.ToLower(r.Pattern)) {
+			target = r.Target
+			break
+		}
+	}
 
 	ext := realSTRMExt(filename)
 	idSuffix := ""
@@ -425,7 +446,7 @@ func (o *Organizer) buildAdultPath(sourceRelPath, filename, rdID string) string 
 	baseName := strings.TrimSuffix(filepath.Base(filename), filepath.Ext(filename))
 	cleanFile := cleanFilename(fmt.Sprintf("%s%s%s", baseName, idSuffix, ext))
 
-	return filepath.Join("X", cleanFolder, cleanFile)
+	return filepath.Join(target, cleanFolder, cleanFile)
 }
 
 // copyFile copies a file from src to dst.

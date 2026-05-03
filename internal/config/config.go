@@ -43,14 +43,22 @@ type Config struct {
 	FFProbeTimeout int   `json:"ffprobe_timeout"` // timeout in seconds (default 15)
 
 	// Content filtering
-	ExcludeKeywordsFile string   `json:"exclude_keywords_file"` // path to file with one keyword per line (case-insensitive)
-	AdultPatterns       []string `json:"adult_patterns"`        // torrent folder substrings that route to X/ folder, skip TMDB
+	ExcludeKeywordsFile string       `json:"exclude_keywords_file"` // path to file with one keyword per line (case-insensitive)
+	AdultPatterns       []string     `json:"adult_patterns"`        // torrent folder substrings → X/ folder, skip TMDB (deprecated: use folder_rules)
+	FolderRules         []FolderRule `json:"folder_rules"`          // custom routing rules
 
 	// TMDB integration
 	TMDBAPIKey string `json:"tmdb_api_key"` // TheMovieDB API v3 key for metadata + renaming
 
 	// Internal
 	Path string `json:"-"` // Config file path
+}
+
+// FolderRule defines a custom routing rule for content placement.
+type FolderRule struct {
+	Pattern  string `json:"pattern"`   // case-insensitive substring match on torrent folder
+	Target   string `json:"target"`    // destination folder (e.g. "X", "Anime", "Documentary")
+	SkipTMDB bool   `json:"skip_tmdb"` // skip TMDB matching for this folder
 }
 
 // defaults returns a Config with default values
@@ -137,26 +145,42 @@ func Load(configPath string) (*Config, error) {
 	return cfg, nil
 }
 
-// Validate checks the configuration for required fields
+// Validate checks the configuration for required fields and sane bounds.
 func (c *Config) Validate() error {
 	if c.Token == "" || c.Token == "YOUR_RD_API_TOKEN" {
 		return fmt.Errorf("Real-Debrid API token is required")
 	}
 
-	if c.ConcurrentRequests < 1 {
-		c.ConcurrentRequests = 10
+	if c.ConcurrentRequests < 1 || c.ConcurrentRequests > 100 {
+		return fmt.Errorf("concurrent_requests must be between 1 and 100, got %d", c.ConcurrentRequests)
 	}
 
 	if c.GeneralRateLimit < 1 {
-		c.GeneralRateLimit = 60
+		return fmt.Errorf("general_rate_limit must be >= 1")
 	}
 
 	if c.TorrentsRateLimit < 1 {
-		c.TorrentsRateLimit = 25
+		return fmt.Errorf("torrents_rate_limit must be >= 1")
 	}
 
 	if c.WatchModeInterval < 10 {
-		c.WatchModeInterval = 60
+		return fmt.Errorf("watch_mode_interval must be >= 10 seconds")
+	}
+
+	if c.FileExpiryDays < 1 {
+		return fmt.Errorf("file_expiry_days must be >= 1")
+	}
+
+	if c.MaxRetryAttempts < 1 {
+		return fmt.Errorf("max_retry_attempts must be >= 1")
+	}
+
+	if c.EnableFFProbe && c.FFProbeTimeout < 1 {
+		return fmt.Errorf("ffprobe_timeout must be >= 1 when ffprobe is enabled")
+	}
+
+	if c.MinFileSizeMB < 0 {
+		return fmt.Errorf("min_file_size_mb must be >= 0")
 	}
 
 	return nil
@@ -167,17 +191,50 @@ func SetInstance(cfg *Config) {
 	instance = cfg
 }
 
-// IsAdultFolder returns true if the folder name matches any adult pattern.
-func (c *Config) IsAdultFolder(folderName string) bool {
-	for _, p := range c.AdultPatterns {
-		if p == "" {
+// MatchFolderRule returns the first matching FolderRule for a folder name, or nil.
+func (c *Config) MatchFolderRule(folderName string) *FolderRule {
+	lower := strings.ToLower(folderName)
+	for i := range c.FolderRules {
+		r := &c.FolderRules[i]
+		if r.Pattern == "" {
 			continue
 		}
-		if strings.Contains(strings.ToLower(folderName), strings.ToLower(p)) {
+		if strings.Contains(lower, strings.ToLower(r.Pattern)) {
+			return r
+		}
+	}
+	return nil
+}
+
+// IsAdultFolder returns true if the folder name matches any adult pattern
+// (from adult_patterns config or folder_rules with skip_tmdb).
+func (c *Config) IsAdultFolder(folderName string) bool {
+	// Check deprecated adult_patterns
+	for _, p := range c.AdultPatterns {
+		if p != "" && strings.Contains(strings.ToLower(folderName), strings.ToLower(p)) {
 			return true
 		}
 	}
+	// Check folder_rules with skip_tmdb
+	if r := c.MatchFolderRule(folderName); r != nil && r.SkipTMDB {
+		return true
+	}
 	return false
+}
+
+// FolderTarget returns the target folder for a given source path folder,
+// considering folder_rules. Returns empty string if no rule matches.
+func (c *Config) FolderTarget(folderName string) string {
+	if r := c.MatchFolderRule(folderName); r != nil {
+		return r.Target
+	}
+	// Check adult_patterns → routes to X
+	for _, p := range c.AdultPatterns {
+		if p != "" && strings.Contains(strings.ToLower(folderName), strings.ToLower(p)) {
+			return "X"
+		}
+	}
+	return ""
 }
 
 // MinFileSizeBytes returns minimum file size in bytes

@@ -41,8 +41,9 @@ type FileTracking struct {
 
 	// TMDB match (from themoviedb.org)
 	TMDBID        int      `json:"tmdb_id,omitempty"`
-	TMDBTitle     string   `json:"tmdb_title,omitempty"`      // official title
-	TMDBType      string   `json:"tmdb_type,omitempty"`       // "movie" or "show"
+	TMDBTitle     string   `json:"tmdb_title,omitempty"`       // official title
+	TMDBOriginalTitle string `json:"tmdb_original_title,omitempty"` // original language title
+	TMDBType      string   `json:"tmdb_type,omitempty"`        // "movie" or "show"
 	TMDBYear      int      `json:"tmdb_year,omitempty"`
 	TMDBOverview  string   `json:"tmdb_overview,omitempty"`
 	TMDBPoster    string   `json:"tmdb_poster,omitempty"`
@@ -57,6 +58,7 @@ type FileTracking struct {
 type Service struct {
 	trackingFile string
 	data         map[string]*FileTracking
+	linkIndex    map[string]string // Link → RelativePath for O(1) lookup
 	mu           sync.RWMutex
 	logger       zerolog.Logger
 }
@@ -66,6 +68,7 @@ func New(trackingFile string) *Service {
 	s := &Service{
 		trackingFile: trackingFile,
 		data:         make(map[string]*FileTracking),
+		linkIndex:    make(map[string]string),
 		logger:       logger.New("tracking"),
 	}
 
@@ -85,13 +88,18 @@ func (s *Service) Track(relativePath, downloadURL, link, torrentID string) {
 	now := time.Now()
 
 	if existing, exists := s.data[relativePath]; exists {
-		// Update existing entry
+		// Update link index if link changed
+		if existing.Link != "" && existing.Link != link {
+			delete(s.linkIndex, existing.Link)
+		}
 		existing.DownloadURL = downloadURL
 		existing.Link = link
 		existing.LastChecked = now
+		if link != "" {
+			s.linkIndex[link] = relativePath
+		}
 		s.logger.Debug().Str("path", relativePath).Msg("Updated tracking")
 	} else {
-		// Create new entry
 		s.data[relativePath] = &FileTracking{
 			RelativePath: relativePath,
 			DownloadURL:  downloadURL,
@@ -99,6 +107,9 @@ func (s *Service) Track(relativePath, downloadURL, link, torrentID string) {
 			CreatedAt:    now,
 			LastChecked:  now,
 			TorrentID:    torrentID,
+		}
+		if link != "" {
+			s.linkIndex[link] = relativePath
 		}
 		s.logger.Debug().Str("path", relativePath).Msg("Started tracking")
 	}
@@ -135,8 +146,7 @@ func (s *Service) Get(relativePath string) (*FileTracking, bool) {
 	return tracking, exists
 }
 
-// GetByLink retrieves tracking data by Link (stable RD link), if any entry matches.
-// Returns the first match found; O(n) scan since Link is not the primary key.
+// GetByLink retrieves tracking data by Link (stable RD link). O(1) via index.
 func (s *Service) GetByLink(link string) (*FileTracking, bool) {
 	if link == "" {
 		return nil, false
@@ -144,108 +154,12 @@ func (s *Service) GetByLink(link string) (*FileTracking, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	for _, t := range s.data {
-		if t.Link == link {
-			return t, true
+	if path, ok := s.linkIndex[link]; ok {
+		if ft, ok := s.data[path]; ok {
+			return ft, true
 		}
 	}
 	return nil, false
-}
-
-// SetMedia stores ffprobe metadata for a tracked file.
-func (s *Service) SetMedia(relativePath string, media *probe.MediaInfo) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if entry, exists := s.data[relativePath]; exists {
-		entry.Media = media
-		s.logger.Debug().Str("path", relativePath).Msg("Stored media metadata")
-	}
-}
-
-// SetRDInfo stores Real-Debrid media info (type, duration, poster, etc.) for a tracked file.
-// Creates the entry if it doesn't exist yet (fetchMediaInfos runs before Sync).
-func (s *Service) SetRDInfo(relativePath string, info *realdebrid.MediaInfoResult) {
-	if info == nil {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	entry, exists := s.data[relativePath]
-	if !exists {
-		entry = &FileTracking{
-			RelativePath: relativePath,
-			CreatedAt:    time.Now(),
-			LastChecked:  time.Now(),
-		}
-		s.data[relativePath] = entry
-	}
-
-	entry.RDType = info.Type
-	entry.RDSeason = info.SeasonInt()
-	entry.RDEpisode = info.EpisodeInt()
-	entry.RDYear = string(info.Year)
-	entry.RDDuration = info.Duration
-	entry.RDBitrate = info.Bitrate
-	if info.PosterPath != "" {
-		entry.RDPosterPath = info.PosterPath
-	}
-	if info.BackdropPath != "" {
-		entry.RDBackdropPath = info.BackdropPath
-	}
-	s.logger.Debug().
-		Str("path", relativePath).
-		Str("rd_type", info.Type).
-		Msg("Stored RD media info")
-}
-
-// MarkRDMediaFailed marks a file's RD media info as permanently unavailable.
-// Subsequent runs will skip this file.
-func (s *Service) MarkRDMediaFailed(relativePath string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if entry, exists := s.data[relativePath]; exists {
-		entry.RDMediaFailed = true
-	}
-}
-
-// SetTMDBMatch stores TMDB match result for a tracked file.
-// Creates the tracking entry if it doesn't exist yet (matchTMDB runs
-// before Sync, which is where Track() normally creates entries).
-func (s *Service) SetTMDBMatch(relativePath string, match *tmdb.MatchResult) {
-	if match == nil {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	entry, exists := s.data[relativePath]
-	if !exists {
-		entry = &FileTracking{
-			RelativePath: relativePath,
-			CreatedAt:    time.Now(),
-			LastChecked:  time.Now(),
-		}
-		s.data[relativePath] = entry
-	}
-
-	entry.TMDBID = match.TMDBID
-	entry.TMDBTitle = match.Title
-	entry.TMDBType = match.Type
-	entry.TMDBYear = match.Year
-	entry.TMDBOverview = match.Overview
-	entry.TMDBPoster = match.PosterPath
-	entry.TMDBBackdrop = match.BackdropPath
-	entry.TMDBRating = match.VoteAverage
-	entry.TMDBGenres = match.Genres
-	entry.IMDBID = match.IMDBID
-
-	s.logger.Debug().
-		Str("path", relativePath).
-		Str("tmdb_title", match.Title).
-		Int("tmdb_id", match.TMDBID).
-		Msg("Stored TMDB match")
 }
 
 // MovePath re-keys a tracking entry from oldPath to newPath.
@@ -262,6 +176,10 @@ func (s *Service) MovePath(oldPath, newPath string) {
 	entry.RelativePath = newPath
 	s.data[newPath] = entry
 	delete(s.data, oldPath)
+	// Update link index
+	if entry.Link != "" {
+		s.linkIndex[entry.Link] = newPath
+	}
 	s.logger.Info().
 		Str("old", oldPath).
 		Str("new", newPath).
@@ -273,8 +191,91 @@ func (s *Service) Remove(relativePath string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if entry, exists := s.data[relativePath]; exists && entry.Link != "" {
+		delete(s.linkIndex, entry.Link)
+	}
 	delete(s.data, relativePath)
 	s.logger.Debug().Str("path", relativePath).Msg("Removed tracking")
+}
+
+// SetMedia stores ffprobe metadata for a tracked file.
+func (s *Service) SetMedia(relativePath string, media *probe.MediaInfo) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if entry, exists := s.data[relativePath]; exists {
+		entry.Media = media
+	}
+}
+
+// SetRDInfo stores Real-Debrid media info. Creates entry if it doesn't exist.
+func (s *Service) SetRDInfo(relativePath string, info *realdebrid.MediaInfoResult) {
+	if info == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	entry, exists := s.data[relativePath]
+	if !exists {
+		entry = &FileTracking{RelativePath: relativePath, CreatedAt: time.Now(), LastChecked: time.Now()}
+		s.data[relativePath] = entry
+	}
+	entry.RDType = info.Type
+	entry.RDSeason = info.SeasonInt()
+	entry.RDEpisode = info.EpisodeInt()
+	entry.RDYear = string(info.Year)
+	entry.RDDuration = info.Duration
+	entry.RDBitrate = info.Bitrate
+	entry.RDMediaFailed = false
+	if info.PosterPath != "" {
+		entry.RDPosterPath = info.PosterPath
+	}
+	if info.BackdropPath != "" {
+		entry.RDBackdropPath = info.BackdropPath
+	}
+}
+
+// MarkRDMediaFailed marks a file's RD media info as permanently unavailable.
+func (s *Service) MarkRDMediaFailed(relativePath string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if entry, exists := s.data[relativePath]; exists {
+		entry.RDMediaFailed = true
+	}
+}
+
+// SetTMDBMatch stores TMDB match result. Creates entry if it doesn't exist.
+func (s *Service) SetTMDBMatch(relativePath string, match *tmdb.MatchResult) {
+	if match == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	entry, exists := s.data[relativePath]
+	if !exists {
+		entry = &FileTracking{RelativePath: relativePath, CreatedAt: time.Now(), LastChecked: time.Now()}
+		s.data[relativePath] = entry
+	}
+	entry.TMDBID = match.TMDBID
+	entry.TMDBTitle = match.Title
+	entry.TMDBOriginalTitle = match.OriginalTitle
+	entry.TMDBType = match.Type
+	entry.TMDBYear = match.Year
+	entry.TMDBOverview = match.Overview
+	entry.TMDBPoster = match.PosterPath
+	entry.TMDBBackdrop = match.BackdropPath
+	entry.TMDBRating = match.VoteAverage
+	entry.TMDBGenres = match.Genres
+	entry.IMDBID = match.IMDBID
+}
+
+// Count returns the number of tracked files
+func (s *Service) Count() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	return len(s.data)
 }
 
 // Save persists tracking data to disk
@@ -312,14 +313,13 @@ func (s *Service) Load() error {
 		return err
 	}
 
+	// Rebuild link index
+	for path, ft := range s.data {
+		if ft.Link != "" {
+			s.linkIndex[ft.Link] = path
+		}
+	}
+
 	s.logger.Debug().Int("count", len(s.data)).Msg("Loaded tracking data")
 	return nil
-}
-
-// Count returns the number of tracked files
-func (s *Service) Count() int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	return len(s.data)
 }

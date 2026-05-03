@@ -672,6 +672,7 @@ type OrganizerResult struct {
 // in tracking and skipped on subsequent runs.
 func (s *Service) fetchMediaInfos(candidates []realdebrid.STRMCandidate) {
 	const maxConsecutiveFailures = 20
+	const maxDuration = 60 * time.Second // total time budget for this phase
 
 	sem := make(chan struct{}, 2)
 	var wg sync.WaitGroup
@@ -679,6 +680,10 @@ func (s *Service) fetchMediaInfos(candidates []realdebrid.STRMCandidate) {
 	var mu sync.Mutex
 	var consecutiveFails atomic.Int64
 	aborted := false
+
+	// Context with deadline to bound total phase duration
+	ctx, cancel := context.WithTimeout(context.Background(), maxDuration)
+	defer cancel()
 
 	start := time.Now()
 	done := make(chan struct{})
@@ -730,6 +735,12 @@ func (s *Service) fetchMediaInfos(candidates []realdebrid.STRMCandidate) {
 			s.logger.Warn().
 				Int64("consecutive_failures", consecutiveFails.Load()).
 				Msg("RD media info — too many consecutive failures, aborting fetch phase")
+			aborted = true
+			break
+		}
+
+		// Time budget exhausted — stop spawning new work
+		if ctx.Err() != nil {
 			aborted = true
 			break
 		}
@@ -925,6 +936,7 @@ func (s *Service) runOrganizer() OrganizerResult {
 		TrackingFile:  s.config.TrackingFile,
 		CacheDir:      s.config.CacheDir,
 		AdultPatterns: s.config.AdultPatterns,
+		FolderRules:   convertFolderRules(s.config.FolderRules),
 		Logger:        s.logger,
 	})
 
@@ -946,4 +958,17 @@ func (s *Service) runOrganizer() OrganizerResult {
 		Skipped:   result.Skipped,
 		Errors:    result.Errors,
 	}
+}
+
+// convertFolderRules converts config folder rules to organizer format.
+func convertFolderRules(rules []config.FolderRule) []organizer.FolderRule {
+	result := make([]organizer.FolderRule, len(rules))
+	for i, r := range rules {
+		result[i] = organizer.FolderRule{
+			Pattern:  r.Pattern,
+			Target:   r.Target,
+			SkipTMDB: r.SkipTMDB,
+		}
+	}
+	return result
 }
