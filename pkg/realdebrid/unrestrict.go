@@ -15,13 +15,10 @@ import (
 
 // unrestrict.go handles link unrestriction and retry behavior.
 
-// UnrestrictLink unrestricts a Real-Debrid link with dual retry strategy
-// - 503 errors: 3 immediate retries with exponential backoff + jitter (2s, 4s, 8s), then queue for next cycle
-// - 429 errors: 4 immediate retries with exponential backoff + jitter (2s, 4s, 8s, 16s), then queue for next cycle
-// - Other errors: fail immediately
-//
-// Jitter (±25%) prevents thundering herds when multiple workers retry simultaneously.
-func (c *Client) UnrestrictLink(link string) (*Download, error) {
+// UnrestrictLink unrestricts a Real-Debrid link with dual retry strategy.
+// The label parameter is a human-readable identifier (e.g. torrent filename)
+// included in log messages for traceability.
+func (c *Client) UnrestrictLink(link string, label string) (*Download, error) {
 	const (
 		max503Retries     = 3  // Server error immediate retries
 		max429Retries     = 4  // Rate limit immediate retries
@@ -88,24 +85,30 @@ func (c *Client) UnrestrictLink(link string) (*Download, error) {
 				delay := retry503BaseDelay * time.Duration(1<<uint(attempt503-1))
 				jitter := time.Duration(rand.Int63n(int64(delay / 4)))
 				sleepTime := delay + jitter
-				c.logger.Warn().
+				logEvt := c.logger.Warn().
 					Int("attempt", attempt503).
 					Dur("delay", sleepTime).
 					Int("rd_error_code", rdCode).
 					Str("rd_error", rdMsg).
-					Str("rd_reason", rdErrorReason(rdCode, rdMsg)).
-					Msg("Server unavailable (503), backing off with jitter")
+					Str("rd_reason", rdErrorReason(rdCode, rdMsg))
+				if label != "" {
+					logEvt.Str("label", label)
+				}
+				logEvt.Msg("Server unavailable (503), backing off with jitter")
 				time.Sleep(sleepTime)
 				continue
 			}
 
 			// Max retries exceeded
-			c.logger.Warn().
+			logEvt := c.logger.Warn().
 				Int("attempts", attempt503).
 				Int("rd_error_code", rdCode).
 				Str("rd_error", rdMsg).
-				Str("rd_reason", rdErrorReason(rdCode, rdMsg)).
-				Msg("Server unavailable after retries, will queue for next cycle")
+				Str("rd_reason", rdErrorReason(rdCode, rdMsg))
+			if label != "" {
+				logEvt.Str("label", label)
+			}
+			logEvt.Msg("Server unavailable after retries, will queue for next cycle")
 			return nil, &request.HTTPError{
 				StatusCode:  http.StatusServiceUnavailable,
 				Message:     fmt.Sprintf("server unavailable (RD code %d: %s)", rdCode, rdMsg),
@@ -118,22 +121,27 @@ func (c *Client) UnrestrictLink(link string) (*Download, error) {
 			// 429 Rate Limit - exponential backoff with jitter, then queue
 			attempt429++
 			if attempt429 <= max429Retries {
-				// Exponential backoff: 2s, 4s, 8s, 16s with ±25% jitter
 				delay := retry429BaseDelay * time.Duration(1<<uint(attempt429-1))
 				jitter := time.Duration(rand.Int63n(int64(delay / 4)))
 				sleepTime := delay + jitter
-				c.logger.Warn().
+				logEvt := c.logger.Warn().
 					Int("attempt", attempt429).
-					Dur("delay", sleepTime).
-					Msg("Rate limit (429), backing off with jitter")
+					Dur("delay", sleepTime)
+				if label != "" {
+					logEvt.Str("label", label)
+				}
+				logEvt.Msg("Rate limit (429), backing off with jitter")
 				time.Sleep(sleepTime)
 				continue
 			}
 
-			// Max retries exceeded - queue for next cycle (don't fail permanently)
-			c.logger.Warn().
-				Int("attempts", attempt429).
-				Msg("Rate limit exceeded after retries, will queue for next cycle")
+			// Max retries exceeded - queue for next cycle
+			logEvt := c.logger.Warn().
+				Int("attempts", attempt429)
+			if label != "" {
+				logEvt.Str("label", label)
+			}
+			logEvt.Msg("Rate limit exceeded after retries, will queue for next cycle")
 			return nil, &request.HTTPError{
 				StatusCode: http.StatusTooManyRequests,
 				Message:    "rate limit exceeded after retries",

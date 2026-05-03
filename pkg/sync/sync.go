@@ -294,7 +294,7 @@ func (s *Service) refreshExpiringLinks(interval time.Duration) {
 	var refreshed, failed int
 	for _, tracking := range expiredFiles {
 		// Unrestrict the original link to get a fresh download URL
-		download, err := s.rd.UnrestrictLink(tracking.Link)
+		download, err := s.rd.UnrestrictLink(tracking.Link, tracking.RelativePath)
 		if err != nil {
 			s.logger.Warn().
 				Err(err).
@@ -400,7 +400,7 @@ func (s *Service) unrestrictLinks(links []missingLink, dryRun bool) ([]*realdebr
 				}
 			}
 
-			download, err := s.rd.UnrestrictLink(ml.link)
+			download, err := s.rd.UnrestrictLink(ml.link, ml.torrent.Filename)
 
 			mu.Lock()
 			defer mu.Unlock()

@@ -63,7 +63,7 @@ func (s *Service) processRetryQueue(torrents []*realdebrid.Torrent) *RetryStats 
 			Int("attempt", item.RetryCount+1).
 			Msg("Retrying link")
 
-		download, err := s.rd.UnrestrictLink(item.Link)
+		download, err := s.rd.UnrestrictLink(item.Link, item.Filename)
 		if err != nil {
 			// Check if it's a retryable error (503)
 			if isRetryableError(err) {
