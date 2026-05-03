@@ -50,6 +50,10 @@ type Config struct {
 	// TMDB integration
 	TMDBAPIKey string `json:"tmdb_api_key"` // TheMovieDB API v3 key for metadata + renaming
 
+	// Filename templates
+	MovieNameTemplate   string `json:"movie_name_template"`   // e.g. "{title} ({year}) [{resolution} {hdr}]"
+	EpisodeNameTemplate string `json:"episode_name_template"` // e.g. "{title} - S{season:02d}E{episode:02d}"
+
 	// Internal
 	Path string `json:"-"` // Config file path
 }

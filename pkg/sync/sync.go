@@ -17,6 +17,7 @@ import (
 	"github.com/robofuse/robofuse/internal/logger"
 	"github.com/robofuse/robofuse/internal/request"
 	"github.com/robofuse/robofuse/pkg/organizer"
+	"github.com/robofuse/robofuse/pkg/namefmt"
 	"github.com/robofuse/robofuse/pkg/realdebrid"
 	"github.com/robofuse/robofuse/pkg/repair"
 	"github.com/robofuse/robofuse/pkg/retry"
@@ -224,6 +225,9 @@ func (s *Service) Run(dryRun bool) (*RunResult, error) {
 	if !dryRun && s.tmdbClient != nil {
 		s.matchTMDB(s.candidates)
 	}
+
+	// Step 7d: Apply filename templates to candidates
+	s.applyNameTemplates(s.candidates)
 
 	// Step 8: Sync STRM files
 	s.logger.Debug().Msg("Syncing STRM files...")
@@ -954,6 +958,105 @@ func (s *Service) matchTMDB(candidates []realdebrid.STRMCandidate) {
 		Msg("TMDB matching complete")
 }
 
+// applyNameTemplates applies user-configured filename templates to candidates.
+// Reads tracking for TMDB/RD/ffprobe metadata to populate template values.
+func (s *Service) applyNameTemplates(candidates []realdebrid.STRMCandidate) {
+	movieTpl := s.config.MovieNameTemplate
+	epTpl := s.config.EpisodeNameTemplate
+	if movieTpl == "" && epTpl == "" {
+		return // no templates configured, use default naming
+	}
+	if movieTpl == "" {
+		movieTpl = namefmt.DefaultMovie
+	}
+	if epTpl == "" {
+		epTpl = namefmt.DefaultEpisode
+	}
+
+	for i := range candidates {
+		c := &candidates[i]
+		path := s.strmService.BuildSTRMPath(c.TorrentFolder, c.Filename)
+		ft, hasTracking := s.strmService.GetTracking(path)
+
+		v := namefmt.Values{
+			Extension: filepath.Ext(c.Filename),
+		}
+
+		// PTT parse for season/episode
+		fn := strings.TrimSuffix(c.Filename, filepath.Ext(c.Filename))
+		parsed := ptt.Parse(fn)
+		folderParsed := ptt.Parse(filepath.Base(c.TorrentFolder))
+
+		v.Title = firstNonEmpty(parsed.Title, folderParsed.Title, filepath.Base(c.TorrentFolder))
+		v.Year = firstNonZero(parsed.Year, folderParsed.Year)
+		if len(parsed.Seasons) > 0 {
+			v.Season = parsed.Seasons[0]
+		} else if len(folderParsed.Seasons) > 0 {
+			v.Season = folderParsed.Seasons[0]
+		}
+		if len(parsed.Episodes) > 0 {
+			v.Episode = parsed.Episodes[0]
+		}
+
+		// TMDB overrides
+		if hasTracking && ft.TMDBID != 0 {
+			if ft.TMDBTitle != "" {
+				v.Title = ft.TMDBTitle
+			}
+			if ft.TMDBOriginalTitle != "" {
+				v.OriginalTitle = ft.TMDBOriginalTitle
+			}
+			if ft.TMDBYear > 0 {
+				v.Year = ft.TMDBYear
+			}
+		}
+
+		// Stream metadata from ffprobe
+		if hasTracking && ft.Media != nil {
+			m := ft.Media
+			if len(m.Video) > 0 {
+				v.Resolution = namefmt.ResolutionLabel(m.Resolution)
+				v.HDR = namefmt.HDRLabel(m.Video[0].HDR)
+				v.Codec = namefmt.CodecLabel(m.Video[0].Codec)
+				if m.Video[0].BitRate > 0 {
+					v.Bitrate = namefmt.BitrateMbps(m.Video[0].BitRate)
+				} else if m.BitRate > 0 {
+					v.Bitrate = namefmt.BitrateMbps(m.BitRate)
+				}
+			}
+			if len(m.Audio) > 0 {
+				var langs []string
+				for _, a := range m.Audio {
+					if a.Language != "" {
+						langs = append(langs, a.Language)
+					}
+				}
+				v.AudioLangs = namefmt.LangCodes(langs)
+			}
+		}
+
+		// Determine type for template selection
+		isEpisode := v.Season > 0 || v.Episode > 0
+		if hasTracking && ft.RDType == "show" {
+			isEpisode = true
+		}
+		if hasTracking && ft.TMDBType == "show" {
+			isEpisode = true
+		}
+
+		var formatted string
+		if isEpisode {
+			formatted = namefmt.Format(epTpl, v)
+		} else {
+			formatted = namefmt.Format(movieTpl, v)
+		}
+		if formatted != "" {
+			formatted = namefmt.Clean(formatted)
+			c.Filename = formatted + v.Extension
+		}
+	}
+}
+
 // runOrganizer executes the Go organizer to organize files using ptt-go.
 func (s *Service) runOrganizer() OrganizerResult {
 	s.logger.Debug().Msg("Running library organizer...")
@@ -1011,4 +1114,22 @@ func isSeasonOnlyTitle(title string) bool {
 		return true
 	}
 	return false
+}
+
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func firstNonZero(vals ...int) int {
+	for _, v := range vals {
+		if v != 0 {
+			return v
+		}
+	}
+	return 0
 }
