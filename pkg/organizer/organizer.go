@@ -453,11 +453,20 @@ func (o *Organizer) Run() Result {
 		contentType, destRelPath := o.getContentTypeAndPath(parsed, parentParsed, filename, rdID)
 		destFullPath := filepath.Join(o.organizedDir, destRelPath)
 
-		// Copy file
+		// Copy STRM file
 		if err := copyFile(sourceFullPath, destFullPath); err != nil {
 			o.logger.Error().Err(err).Str("path", relPath).Msg("Failed to organize file")
 			result.Errors++
 			continue
+		}
+
+		// Also copy companion .nfo file if it exists
+		srcNFO := strings.TrimSuffix(sourceFullPath, filepath.Ext(sourceFullPath)) + ".nfo"
+		dstNFO := strings.TrimSuffix(destFullPath, filepath.Ext(destFullPath)) + ".nfo"
+		if fileExists(srcNFO) {
+			if err := copyFile(srcNFO, dstNFO); err != nil {
+				o.logger.Debug().Err(err).Str("path", srcNFO).Msg("Failed to copy companion NFO")
+			}
 		}
 
 		newState[relPath] = FileEntry{
@@ -477,7 +486,9 @@ func (o *Organizer) Run() Result {
 			if fileExists(destFull) {
 				if err := os.Remove(destFull); err == nil {
 					result.Deleted++
-					// Try to remove empty parent directories
+					// Also remove companion .nfo
+					nfoPath := strings.TrimSuffix(destFull, filepath.Ext(destFull)) + ".nfo"
+					os.Remove(nfoPath) // best-effort, ignore errors
 					o.cleanEmptyDirs(filepath.Dir(destFull))
 				}
 			}

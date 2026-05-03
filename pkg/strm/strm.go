@@ -541,7 +541,7 @@ func (s *Service) dispatchProbes(targets []probeTarget) {
 			ctx := context.Background()
 			media, err := probe.Probe(ctx, t.url, timeout, ffprobePath, s.logger)
 			if err != nil {
-				s.logger.Debug().
+				s.logger.Warn().
 					Err(err).
 					Str("path", t.path).
 					Msg("ffprobe failed")
