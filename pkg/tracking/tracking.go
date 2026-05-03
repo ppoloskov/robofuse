@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -286,6 +287,9 @@ func (s *Service) Save() error {
 		return err
 	}
 
+	if err := os.MkdirAll(filepath.Dir(s.trackingFile), 0755); err != nil {
+		return err
+	}
 	if err := atomic.WriteFile(s.trackingFile, bytes.NewReader(data)); err != nil {
 		return err
 	}

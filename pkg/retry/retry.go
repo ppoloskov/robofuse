@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -148,6 +149,9 @@ func (q *Queue) Save() error {
 		return err
 	}
 
+	if err := os.MkdirAll(filepath.Dir(q.queueFile), 0755); err != nil {
+		return err
+	}
 	if err := atomic.WriteFile(q.queueFile, bytes.NewReader(data)); err != nil {
 		return err
 	}
