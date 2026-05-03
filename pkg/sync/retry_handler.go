@@ -100,7 +100,10 @@ func (s *Service) processRetryQueue(torrents []*realdebrid.Torrent) *RetryStats 
 	return stats
 }
 
-// isRetryableError checks if an error should be retried in next cycle
+// isRetryableError checks if an error should be retried in next cycle.
+// For 503 errors, inspects the Real-Debrid error_code to distinguish
+// transient failures (hoster down, traffic exceeded) from permanent
+// ones (file removed, link nerfed).
 func isRetryableError(err error) bool {
 	var httpErr *request.HTTPError
 	if errors.As(err, &httpErr) {
@@ -109,12 +112,25 @@ func isRetryableError(err error) bool {
 			httpErr.StatusCode == http.StatusBadGateway ||
 			httpErr.StatusCode == http.StatusGatewayTimeout ||
 			httpErr.StatusCode == http.StatusTooManyRequests {
+			// Even for 503, some RD error codes are permanent — don't retry those.
+			if httpErr.RDErrorCode != 0 {
+				switch httpErr.RDErrorCode {
+				case 19: // File has been removed
+					return false
+				case 24: // Link has been nerfed
+					return false
+				}
+			}
 			return true
 		}
 
 		// Check for special retry sentinel codes from UnrestrictLink's retry exhaustion
 		if httpErr.Code == "server_unavailable_retryable" ||
 			httpErr.Code == "rate_limit_retryable" {
+			// Also check permanent RD codes on sentinels
+			if httpErr.RDErrorCode == 19 || httpErr.RDErrorCode == 24 {
+				return false
+			}
 			return true
 		}
 	}

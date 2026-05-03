@@ -73,29 +73,43 @@ func (c *Client) UnrestrictLink(link string) (*Download, error) {
 			return result.ToDownload(), nil
 
 		case http.StatusServiceUnavailable:
-			// 503 Server Unavailable - exponential backoff with jitter
+			// 503 Server Unavailable — try to extract the Real-Debrid error code
+			// from the response body for better diagnostics.
+			var errResp ErrorResponse
+			rdCode := 0
+			rdMsg := ""
+			if err := json.Unmarshal(body, &errResp); err == nil && errResp.ErrorCode != 0 {
+				rdCode = errResp.ErrorCode
+				rdMsg = errResp.Error
+			}
+
 			attempt503++
 			if attempt503 <= max503Retries {
-				// Exponential backoff: 2s, 4s, 8s with ±25% jitter
 				delay := retry503BaseDelay * time.Duration(1<<uint(attempt503-1))
 				jitter := time.Duration(rand.Int63n(int64(delay / 4)))
 				sleepTime := delay + jitter
 				c.logger.Warn().
 					Int("attempt", attempt503).
 					Dur("delay", sleepTime).
+					Int("rd_error_code", rdCode).
+					Str("rd_error", rdMsg).
 					Msg("Server unavailable (503), backing off with jitter")
 				time.Sleep(sleepTime)
 				continue
 			}
 
-			// Max immediate retries exceeded - return special error for queue
+			// Max retries exceeded
 			c.logger.Warn().
 				Int("attempts", attempt503).
+				Int("rd_error_code", rdCode).
+				Str("rd_error", rdMsg).
 				Msg("Server unavailable after retries, will queue for next cycle")
 			return nil, &request.HTTPError{
-				StatusCode: http.StatusServiceUnavailable,
-				Message:    "server unavailable after retries",
-				Code:       "server_unavailable_retryable",
+				StatusCode:  http.StatusServiceUnavailable,
+				Message:     fmt.Sprintf("server unavailable (RD code %d: %s)", rdCode, rdMsg),
+				Code:        "server_unavailable_retryable",
+				RDErrorCode: rdCode,
+				RDError:     rdMsg,
 			}
 
 		case http.StatusTooManyRequests:

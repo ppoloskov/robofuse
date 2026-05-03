@@ -416,9 +416,15 @@ func (s *Service) unrestrictLinks(links []missingLink, dryRun bool) ([]*realdebr
 					// Add to retry queue for next cycle
 					s.addToRetryQueue(ml.link, ml.torrent, err)
 					queued++
-					s.logger.Debug().
-						Str("filename", ml.torrent.Filename).
-						Msg("Added to retry queue (retryable error)")
+					// Log RD error detail if available
+					logEvt := s.logger.Debug().
+						Str("filename", ml.torrent.Filename)
+					var httpErr *request.HTTPError
+					if errors.As(err, &httpErr) && httpErr.RDErrorCode != 0 {
+						logEvt.Int("rd_error_code", httpErr.RDErrorCode).
+							Str("rd_error", httpErr.RDError)
+					}
+					logEvt.Msg("Added to retry queue (retryable error)")
 				} else {
 					// Non-retryable error resets the circuit
 					consecutiveErrors.Store(0)
