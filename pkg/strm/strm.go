@@ -687,6 +687,11 @@ func (s *Service) SetRDInfo(relativePath string, info *realdebrid.MediaInfoResul
 	s.tracking.SetRDInfo(relativePath, info)
 }
 
+// MarkRDMediaFailed marks a file's RD media info as permanently unavailable.
+func (s *Service) MarkRDMediaFailed(relativePath string) {
+	s.tracking.MarkRDMediaFailed(relativePath)
+}
+
 // GetTracking returns the tracking entry for a file, if it exists.
 func (s *Service) GetTracking(relativePath string) (*tracking.FileTracking, bool) {
 	return s.tracking.Get(relativePath)

@@ -653,17 +653,19 @@ type OrganizerResult struct {
 }
 
 // fetchMediaInfos fetches RD media info (/streaming/mediaInfos/{id}) for each
-// candidate and stores the result in the tracking database. Used for
-// classification (movie vs show), duration, season/episode, and poster URLs.
-// Runs with bounded concurrency (3 parallel). Skips candidates that already
-// have RD info in tracking.
+// candidate. Uses a circuit breaker: after 20 consecutive failures, aborts the
+// entire phase (the endpoint is likely unavailable). Failed files are marked
+// in tracking and skipped on subsequent runs.
 func (s *Service) fetchMediaInfos(candidates []realdebrid.STRMCandidate) {
-	sem := make(chan struct{}, 3) // max 3 concurrent
+	const maxConsecutiveFailures = 20
+
+	sem := make(chan struct{}, 2)
 	var wg sync.WaitGroup
 	var skipped, fetched, failed int
 	var mu sync.Mutex
+	var consecutiveFails atomic.Int64
+	aborted := false
 
-	// Progress logging
 	start := time.Now()
 	done := make(chan struct{})
 	go func() {
@@ -675,9 +677,7 @@ func (s *Service) fetchMediaInfos(candidates []realdebrid.STRMCandidate) {
 				return
 			case <-ticker.C:
 				mu.Lock()
-				f := fetched
-				sk := skipped
-				fa := failed
+				f, sk, fa := fetched, skipped, failed
 				mu.Unlock()
 				s.logger.Info().
 					Int("fetched", f).
@@ -689,19 +689,35 @@ func (s *Service) fetchMediaInfos(candidates []realdebrid.STRMCandidate) {
 	}()
 
 	for _, c := range candidates {
+		if aborted {
+			break
+		}
+
 		c := c
 		dl, ok := s.downloadMap[c.Link]
 		if !ok || dl.ID == "" {
 			continue
 		}
 
-		// Skip if tracking already has RD type info
 		path := s.strmService.BuildSTRMPath(c.TorrentFolder, c.Filename)
-		if ft, ok := s.strmService.GetTracking(path); ok && ft.RDType != "" {
-			mu.Lock()
-			skipped++
-			mu.Unlock()
-			continue
+
+		// Skip if already have RD info or previously marked as failed
+		if ft, ok := s.strmService.GetTracking(path); ok {
+			if ft.RDType != "" || ft.RDMediaFailed {
+				mu.Lock()
+				skipped++
+				mu.Unlock()
+				continue
+			}
+		}
+
+		// Circuit breaker: abort if too many consecutive failures
+		if consecutiveFails.Load() >= maxConsecutiveFailures {
+			s.logger.Warn().
+				Int64("consecutive_failures", consecutiveFails.Load()).
+				Msg("RD media info — too many consecutive failures, aborting fetch phase")
+			aborted = true
+			break
 		}
 
 		wg.Add(1)
@@ -711,30 +727,20 @@ func (s *Service) fetchMediaInfos(candidates []realdebrid.STRMCandidate) {
 			defer func() { <-sem }()
 
 			info, err := s.rd.GetMediaInfo(dl.ID)
-			if err != nil {
-				mu.Lock()
-				failed++
-				mu.Unlock()
-				s.logger.Debug().Err(err).Str("id", dl.ID).Msg("RD media info fetch failed")
-				return
-			}
-			if info == nil {
+			if err != nil || info == nil {
+				consecutiveFails.Add(1)
+				s.strmService.MarkRDMediaFailed(path)
 				mu.Lock()
 				failed++
 				mu.Unlock()
 				return
 			}
 
+			consecutiveFails.Store(0) // reset on success
 			s.strmService.SetRDInfo(path, info)
 			mu.Lock()
 			fetched++
 			mu.Unlock()
-
-			s.logger.Debug().
-				Str("path", path).
-				Str("type", info.Type).
-				Float64("duration", info.Duration).
-				Msg("RD media info stored")
 		}()
 	}
 
@@ -745,6 +751,7 @@ func (s *Service) fetchMediaInfos(candidates []realdebrid.STRMCandidate) {
 		Int("fetched", fetched).
 		Int("skipped", skipped).
 		Int("failed", failed).
+		Bool("aborted", aborted).
 		Dur("elapsed", time.Since(start).Round(time.Second)).
 		Msg("RD media info sync complete")
 }
@@ -752,7 +759,7 @@ func (s *Service) fetchMediaInfos(candidates []realdebrid.STRMCandidate) {
 // matchTMDB searches TMDB for each candidate to get official titles and metadata.
 // Skips candidates that already have a TMDB match in tracking.
 func (s *Service) matchTMDB(candidates []realdebrid.STRMCandidate) {
-	var matched, skipped int
+	var matched, skipped, unmatched int
 	start := time.Now()
 
 	for _, c := range candidates {
@@ -788,30 +795,40 @@ func (s *Service) matchTMDB(candidates []realdebrid.STRMCandidate) {
 
 		match, err := s.tmdbClient.Match(mediaType, searchTitle, searchYear)
 		if err != nil {
-			s.logger.Debug().Err(err).Str("title", searchTitle).Msg("TMDB match failed")
+			s.logger.Warn().
+				Err(err).
+				Str("search_title", searchTitle).
+				Str("type", mediaType).
+				Msg("TMDB match error")
+			unmatched++
 			continue
 		}
 		if match == nil {
+			s.logger.Warn().
+				Str("search_title", searchTitle).
+				Str("type", mediaType).
+				Int("year", searchYear).
+				Msg("TMDB no match found")
+			unmatched++
 			continue
 		}
 
 		s.strmService.SetTMDBMatch(path, match)
 		matched++
 
-		s.logger.Debug().
+		s.logger.Info().
 			Str("path", path).
 			Str("tmdb_title", match.Title).
 			Int("tmdb_id", match.TMDBID).
 			Msg("TMDB match found")
 	}
 
-	if matched > 0 || skipped > 0 {
-		s.logger.Info().
-			Int("matched", matched).
-			Int("skipped", skipped).
-			Dur("elapsed", time.Since(start).Round(time.Second)).
-			Msg("TMDB matching complete")
-	}
+	s.logger.Info().
+		Int("matched", matched).
+		Int("skipped", skipped).
+		Int("unmatched", unmatched).
+		Dur("elapsed", time.Since(start).Round(time.Second)).
+		Msg("TMDB matching complete")
 }
 
 // runOrganizer executes the Go organizer to organize files using ptt-go.

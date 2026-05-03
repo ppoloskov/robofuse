@@ -34,6 +34,7 @@ type FileTracking struct {
 	RDBitrate      int     `json:"rd_bitrate,omitempty"`
 	RDPosterPath   string  `json:"rd_poster_path,omitempty"`   // poster image URL
 	RDBackdropPath string  `json:"rd_backdrop_path,omitempty"` // backdrop image URL
+	RDMediaFailed  bool    `json:"rd_media_failed,omitempty"`  // true if mediaInfos returned 503
 
 	// TMDB match (from themoviedb.org)
 	TMDBID        int      `json:"tmdb_id,omitempty"`
@@ -188,6 +189,16 @@ func (s *Service) SetRDInfo(relativePath string, info *realdebrid.MediaInfoResul
 		Str("path", relativePath).
 		Str("rd_type", info.Type).
 		Msg("Stored RD media info")
+}
+
+// MarkRDMediaFailed marks a file's RD media info as permanently unavailable.
+// Subsequent runs will skip this file.
+func (s *Service) MarkRDMediaFailed(relativePath string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if entry, exists := s.data[relativePath]; exists {
+		entry.RDMediaFailed = true
+	}
 }
 
 // SetTMDBMatch stores TMDB match result for a tracked file.
