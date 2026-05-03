@@ -106,6 +106,11 @@ func (s *Service) Run(dryRun bool) (*RunResult, error) {
 	result.TorrentsDead = len(dead)
 	result.TorrentsTotal = result.TorrentsDownloaded + result.TorrentsDead
 
+	// Step 1b: Populate original filenames for better folder naming
+	if !dryRun {
+		s.rd.PopulateOriginalFilenames(downloaded)
+	}
+
 	// Step 2: Process retry queue (cross-cycle retries)
 	if !dryRun {
 		retryStats := s.processRetryQueue(downloaded)
@@ -606,9 +611,14 @@ func (s *Service) buildCandidatesInto(torrents []*realdebrid.Torrent, downloadMa
 				continue
 			}
 
+			folderName := torrent.Filename
+			if torrent.OriginalFilename != "" {
+				folderName = torrent.OriginalFilename
+			}
+
 			candidates = append(candidates, realdebrid.STRMCandidate{
 				TorrentID:     torrent.ID,
-				TorrentFolder: torrent.Filename,
+				TorrentFolder: folderName,
 				Filename:      download.Filename,
 				DownloadURL:   download.Download,
 				Link:          download.Link,

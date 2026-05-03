@@ -99,6 +99,26 @@ func (c *Client) GetTorrents() ([]*Torrent, []*Torrent, error) {
 	return downloaded, dead, nil
 }
 
+// PopulateOriginalFilenames fetches /torrents/info/{id} for each torrent
+// to populate the OriginalFilename field with the original torrent name.
+// This provides better folder names (e.g. "Miami.Vice.S01.1080p" instead of
+// "Сезон 1 (1984-1985)").
+func (c *Client) PopulateOriginalFilenames(torrents []*Torrent) {
+	for _, t := range torrents {
+		if t.OriginalFilename != "" {
+			continue
+		}
+		info, err := c.GetTorrentInfo(t.ID)
+		if err != nil {
+			c.logger.Debug().Err(err).Str("id", t.ID).Msg("Failed to get torrent info for original filename")
+			continue
+		}
+		if info.OriginalFilename != "" {
+			t.OriginalFilename = info.OriginalFilename
+		}
+	}
+}
+
 // GetTorrentInfo fetches detailed info for a specific torrent
 func (c *Client) GetTorrentInfo(torrentID string) (*TorrentInfo, error) {
 	url := fmt.Sprintf("%s/torrents/info/%s", c.Host, torrentID)
