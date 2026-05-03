@@ -638,19 +638,25 @@ type OrganizerResult struct {
 // fetchMediaInfos fetches RD media info (/streaming/mediaInfos/{id}) for each
 // candidate and stores the result in the tracking database. Used for
 // classification (movie vs show), duration, season/episode, and poster URLs.
-// Runs with bounded concurrency (2 parallel) to avoid hammering the API.
+// Runs with bounded concurrency (3 parallel). Skips candidates that already
+// have RD info in tracking.
 func (s *Service) fetchMediaInfos(candidates []realdebrid.STRMCandidate) {
-	if !s.config.EnableFFProbe && true { // always try RD media info, it's lightweight
-		// continue
-	}
-
 	sem := make(chan struct{}, 3) // max 3 concurrent
 	var wg sync.WaitGroup
+	var skipped, fetched int
+	var mu sync.Mutex
 
 	for _, c := range candidates {
 		c := c
 		dl, ok := s.downloadMap[c.Link]
 		if !ok || dl.ID == "" {
+			continue
+		}
+
+		// Skip if tracking already has RD type info
+		path := s.strmService.BuildSTRMPath(c.TorrentFolder, c.Filename)
+		if ft, ok := s.strmService.GetTracking(path); ok && ft.RDType != "" {
+			skipped++
 			continue
 		}
 
@@ -669,9 +675,10 @@ func (s *Service) fetchMediaInfos(candidates []realdebrid.STRMCandidate) {
 				return
 			}
 
-			// Store in tracking by STRM path
-			path := s.strmService.BuildSTRMPath(c.TorrentFolder, c.Filename)
 			s.strmService.SetRDInfo(path, info)
+			mu.Lock()
+			fetched++
+			mu.Unlock()
 
 			s.logger.Debug().
 				Str("path", path).
@@ -682,6 +689,13 @@ func (s *Service) fetchMediaInfos(candidates []realdebrid.STRMCandidate) {
 	}
 
 	wg.Wait()
+
+	if fetched > 0 || skipped > 0 {
+		s.logger.Info().
+			Int("fetched", fetched).
+			Int("skipped", skipped).
+			Msg("RD media info sync")
+	}
 }
 
 // runOrganizer executes the Go organizer to organize files using ptt-go.

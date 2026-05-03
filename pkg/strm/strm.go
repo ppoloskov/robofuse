@@ -624,6 +624,11 @@ func (s *Service) SetRDInfo(relativePath string, info *realdebrid.MediaInfoResul
 	s.tracking.SetRDInfo(relativePath, info)
 }
 
+// GetTracking returns the tracking entry for a file, if it exists.
+func (s *Service) GetTracking(relativePath string) (*tracking.FileTracking, bool) {
+	return s.tracking.Get(relativePath)
+}
+
 // sanitizeFilename makes a filename safe for the filesystem with enhanced cleaning
 func sanitizeFilename(name string) string {
 	// Step 1: Multi-pass URL decoding (up to 3 times)
