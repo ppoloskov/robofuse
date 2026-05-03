@@ -18,9 +18,9 @@ type MediaInfoResult struct {
 	Hoster       string              `json:"hoster"`        // file hosted on
 	Link         string              `json:"link"`          // original content link
 	Type         string              `json:"type"`          // "movie", "show", "audio"
-	Season       string              `json:"season"`        // if found, else null or empty
-	Episode      string              `json:"episode"`       // if found, else null or empty
-	Year         string              `json:"year"`          // if found, else null or empty
+	Season       flexString          `json:"season"`        // if found, else null or empty
+	Episode      flexString          `json:"episode"`       // if found, else null or empty
+	Year         flexString          `json:"year"`          // if found, else null or empty (RD returns string or int)
 	Duration     float64             `json:"duration"`      // seconds
 	Bitrate      int                 `json:"bitrate"`       // bits per second
 	Size         int64               `json:"size"`          // bytes
@@ -29,6 +29,27 @@ type MediaInfoResult struct {
 	BackdropPath string              `json:"backdrop_path"` // URL of backdrop image
 	Details      MediaInfoDetails    `json:"details"`
 }
+
+// flexString handles JSON fields that RD returns as either string or number.
+type flexString string
+
+func (f *flexString) UnmarshalJSON(data []byte) error {
+	// Try string first
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		*f = flexString(s)
+		return nil
+	}
+	// Try number
+	var n float64
+	if err := json.Unmarshal(data, &n); err == nil {
+		*f = flexString(fmt.Sprintf("%.0f", n))
+		return nil
+	}
+	return fmt.Errorf("flexString: expected string or number, got %s", string(data))
+}
+
+func (f flexString) String() string { return string(f) }
 
 // MediaInfoDetails holds the nested video/audio/subtitle stream metadata.
 type MediaInfoDetails struct {
@@ -103,13 +124,13 @@ func (m *MediaInfoResult) DurationMinutes() int {
 
 // SeasonInt parses the season string to int, returns 0 on failure.
 func (m *MediaInfoResult) SeasonInt() int {
-	n, _ := strconv.Atoi(m.Season)
+	n, _ := strconv.Atoi(string(m.Season))
 	return n
 }
 
 // EpisodeInt parses the episode string to int, returns 0 on failure.
 func (m *MediaInfoResult) EpisodeInt() int {
-	n, _ := strconv.Atoi(m.Episode)
+	n, _ := strconv.Atoi(string(m.Episode))
 	return n
 }
 

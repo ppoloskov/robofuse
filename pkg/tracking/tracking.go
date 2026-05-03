@@ -184,7 +184,7 @@ func (s *Service) SetRDInfo(relativePath string, info *realdebrid.MediaInfoResul
 	entry.RDType = info.Type
 	entry.RDSeason = info.SeasonInt()
 	entry.RDEpisode = info.EpisodeInt()
-	entry.RDYear = info.Year
+	entry.RDYear = string(info.Year)
 	entry.RDDuration = info.Duration
 	entry.RDBitrate = info.Bitrate
 	if info.PosterPath != "" {
