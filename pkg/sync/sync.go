@@ -855,6 +855,25 @@ func (s *Service) matchTMDB(candidates []realdebrid.STRMCandidate) {
 		}
 		searchYear := folderParsed.Year
 
+		// Fallback: if folder name is just a season marker (no show title),
+		// try the torrent's original_filename from RD. Example: folder
+		// "Сезон 1 (1984-1985)" → original_filename "Miami.Vice.S01.1080p".
+		if len(folderParsed.Seasons) > 0 && (searchTitle == "" || isSeasonOnlyTitle(searchTitle)) {
+			if len(g.candidates) > 0 {
+				torrentID := g.candidates[0].TorrentID
+				if info, err := s.rd.GetTorrentInfo(torrentID); err == nil && info != nil {
+					origParsed := ptt.Parse(info.OriginalFilename)
+					if origParsed.Title != "" {
+						searchTitle = origParsed.Title
+						s.logger.Debug().
+							Str("folder", g.folder).
+							Str("original_title", origParsed.Title).
+							Msg("TMDB using original torrent filename for title")
+					}
+				}
+			}
+		}
+
 		// Determine type: if the folder or any file has season/episode → show
 		mediaType := "movie"
 		if len(folderParsed.Seasons) > 0 || len(folderParsed.Episodes) > 0 || folderParsed.Anime {
@@ -971,4 +990,15 @@ func convertFolderRules(rules []config.FolderRule) []organizer.FolderRule {
 		}
 	}
 	return result
+}
+
+// isSeasonOnlyTitle returns true if the title is just a season indicator
+// with no actual show name. Covers multiple languages.
+func isSeasonOnlyTitle(title string) bool {
+	t := strings.ToLower(strings.TrimSpace(title))
+	switch t {
+	case "season", "сезон", "staffel", "saison", "temporada", "stagione", "sezona", "sæson", "sesong":
+		return true
+	}
+	return false
 }
