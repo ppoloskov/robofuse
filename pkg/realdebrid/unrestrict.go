@@ -149,11 +149,14 @@ func (c *Client) UnrestrictLink(link string) (*Download, error) {
 	}
 }
 
-// mapErrorCode maps Real-Debrid error codes to appropriate errors
+// mapErrorCode maps Real-Debrid error codes to appropriate errors.
+// Codes 19 and 35 are both "hoster unavailable" (transient — the file hoster
+// may recover). Code 23/34/36 are "traffic exceeded" (transient — resets daily).
+// Code 24 is "link nerfed" (usually permanent — DMCA/file removed).
 func (c *Client) mapErrorCode(code int, message string) error {
 	switch code {
 	case 19:
-		// File has been removed
+		// Hoster is temporarily unavailable (transient)
 		return request.HosterUnavailableError
 	case 23:
 		// Traffic exceeded
