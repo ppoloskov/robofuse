@@ -915,7 +915,43 @@ func (s *Service) matchTMDB(candidates []realdebrid.STRMCandidate) {
 			}
 		}
 
+		// For shows: folder name is the show title (don't override with
+		// episode filename — PTT extracts episode titles like "Brother's Keeper").
+		// For movies: filename often has a better title than the folder.
+		if mediaType == "show" {
+			// Only use folder-based parsing for shows
+			if folderParsed.Title != "" {
+				searchTitle = folderParsed.Title
+			}
+			if folderParsed.Year > 0 {
+				searchYear = folderParsed.Year
+			}
+		} else if len(g.candidates) > 0 {
+			// For movies, try filename parsing for better title
+			c := g.candidates[0]
+			fn := strings.TrimSuffix(c.Filename, filepath.Ext(c.Filename))
+			parsed := ptt.Parse(fn)
+			if parsed.Title != "" {
+				searchTitle = parsed.Title
+			}
+			if parsed.Year > 0 {
+				searchYear = parsed.Year
+			}
+		}
+
+		// Check manual title overrides
+		if override, ok := s.config.TitleOverrides[g.folder]; ok {
+			searchTitle = override
+		}
+
 		match, err := s.tmdbClient.Match(mediaType, searchTitle, searchYear)
+		// Fallback chain: retry without year, then retry with raw folder name
+		if match == nil && searchYear > 0 {
+			match, err = s.tmdbClient.Match(mediaType, searchTitle, 0)
+		}
+		if match == nil && searchTitle != g.folder {
+			match, err = s.tmdbClient.Match(mediaType, g.folder, 0)
+		}
 		if err != nil {
 			s.logger.Warn().
 				Err(err).

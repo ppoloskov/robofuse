@@ -43,9 +43,10 @@ type Config struct {
 	FFProbeTimeout int   `json:"ffprobe_timeout"` // timeout in seconds (default 15)
 
 	// Content filtering
-	ExcludeKeywordsFile string       `json:"exclude_keywords_file"` // path to file with one keyword per line (case-insensitive)
-	AdultPatterns       []string     `json:"adult_patterns"`        // torrent folder substrings → X/ folder, skip TMDB (deprecated: use folder_rules)
-	FolderRules         []FolderRule `json:"folder_rules"`          // custom routing rules
+	ExcludeKeywordsFile string            `json:"exclude_keywords_file"`
+	AdultPatterns       []string          `json:"adult_patterns"`
+	FolderRules         []FolderRule      `json:"folder_rules"`
+	TitleOverrides      map[string]string `json:"title_overrides"` // torrent folder → TMDB search title
 
 	// TMDB integration
 	TMDBAPIKey string `json:"tmdb_api_key"` // TheMovieDB API v3 key for metadata + renaming
