@@ -655,7 +655,14 @@ func (s *Service) dispatchProbes(targets []probeTarget) {
 		ffprobePath = "ffprobe"
 	}
 
+	var skipped int
 	for _, t := range targets {
+		// Skip if we already have probe data for this file
+		if ft, ok := s.tracking.Get(t.path); ok && ft.Media != nil {
+			skipped++
+			continue
+		}
+
 		t := t // capture
 		s.probeWg.Add(1)
 		go func() {

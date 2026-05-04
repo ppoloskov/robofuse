@@ -16,8 +16,9 @@ import (
 var version = "1.1.2"
 
 var (
-	cfgPath   string
-	logLevel  string
+	cfgPath          string
+	logLevel         string
+	rebuildOrganized bool
 )
 
 func main() {
@@ -37,6 +38,7 @@ with media players like Infuse, Jellyfin, and Emby.`,
 
 	rootCmd.PersistentFlags().StringVarP(&cfgPath, "config", "c", "", "Path to config file")
 	rootCmd.PersistentFlags().StringVar(&logLevel, "log-level", "", "Log level (debug, info, warn, error)")
+	rootCmd.PersistentFlags().BoolVar(&rebuildOrganized, "rebuild-organized", false, "Delete organized directory and rebuild from scratch")
 
 	rootCmd.AddCommand(&cobra.Command{
 		Use:   "run",
@@ -105,6 +107,13 @@ func printBanner() {
 func runSync(cfg *config.Config, dryRun bool) {
 	log := logger.Default()
 	service := sync.New(cfg)
+
+	if rebuildOrganized && !dryRun {
+		log.Info().Str("dir", cfg.OrganizedDir).Msg("Rebuilding organized directory")
+		os.RemoveAll(cfg.OrganizedDir)
+		os.Remove(cfg.CacheDir + "/organizer_db.json")
+	}
+
 	result, err := service.Run(dryRun)
 	if err != nil {
 		log.Error().Err(err).Msg("Sync failed")

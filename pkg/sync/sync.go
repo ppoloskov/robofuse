@@ -971,12 +971,24 @@ func (s *Service) matchTMDB(candidates []realdebrid.STRMCandidate) {
 			continue
 		}
 
-		// Fetch content rating for kids folder routing
+		// Fetch content rating for kids folder routing (only if not already cached)
 		if s.config.KidsMaxRating != "" && match != nil {
-			if match.Type == "movie" {
-				match.ContentRating = s.tmdbClient.GetMovieCertification(match.TMDBID)
-			} else {
-				match.ContentRating = s.tmdbClient.GetTVCertification(match.TMDBID)
+			// Check if any candidate already has a rating cached
+			needRating := true
+			for _, c := range g.candidates {
+				path := s.strmService.BuildSTRMPath(c.TorrentFolder, c.Filename)
+				if ft, ok := s.strmService.GetTracking(path); ok && ft.TMDBContentRating != "" {
+					needRating = false
+					match.ContentRating = ft.TMDBContentRating
+					break
+				}
+			}
+			if needRating {
+				if match.Type == "movie" {
+					match.ContentRating = s.tmdbClient.GetMovieCertification(match.TMDBID)
+				} else {
+					match.ContentRating = s.tmdbClient.GetTVCertification(match.TMDBID)
+				}
 			}
 		}
 
