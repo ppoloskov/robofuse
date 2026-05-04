@@ -120,19 +120,20 @@ type Genre struct {
 
 // MatchResult holds the matched metadata ready for renaming and NFO.
 type MatchResult struct {
-	TMDBID       int      `json:"tmdb_id"`
-	Title        string   `json:"title"`         // official title
-	OriginalTitle string  `json:"original_title"`
-	Year         int      `json:"year"`
-	Type         string   `json:"type"`          // "movie" or "show"
-	Overview     string   `json:"overview"`
-	PosterPath   string   `json:"poster_path"`
-	BackdropPath string   `json:"backdrop_path"`
-	VoteAverage  float64  `json:"vote_average"`
-	Genres       []string `json:"genres"`
-	Runtime      int      `json:"runtime,omitempty"`      // movies only
-	IMDBID       string   `json:"imdb_id,omitempty"`       // movies only
-	Seasons      int      `json:"number_of_seasons,omitempty"` // TV only
+	TMDBID         int      `json:"tmdb_id"`
+	Title          string   `json:"title"`
+	OriginalTitle  string   `json:"original_title"`
+	Year           int      `json:"year"`
+	Type           string   `json:"type"` // "movie" or "show"
+	Overview       string   `json:"overview"`
+	PosterPath     string   `json:"poster_path"`
+	BackdropPath   string   `json:"backdrop_path"`
+	VoteAverage    float64  `json:"vote_average"`
+	Genres         []string `json:"genres"`
+	Runtime        int      `json:"runtime,omitempty"`
+	IMDBID         string   `json:"imdb_id,omitempty"`
+	Seasons        int      `json:"number_of_seasons,omitempty"`
+	ContentRating  string   `json:"content_rating,omitempty"` // US certification (G, PG, TV-Y, etc.)
 }
 
 // ---------------------------------------------------------------------------
@@ -416,4 +417,92 @@ func (m *MatchResult) CleanTitle() string {
 	t = strings.ReplaceAll(t, ">", "_")
 	t = strings.ReplaceAll(t, "|", "_")
 	return strings.TrimSpace(t)
+}
+
+// ---------------------------------------------------------------------------
+// Content ratings
+// ---------------------------------------------------------------------------
+
+// movieReleaseDatesResponse from /movie/{id}/release_dates.
+type movieReleaseDatesResponse struct {
+	Results []movieReleaseCountry `json:"results"`
+}
+type movieReleaseCountry struct {
+	Iso3166_1    string              `json:"iso_3166_1"`
+	ReleaseDates []movieReleaseEntry `json:"release_dates"`
+}
+type movieReleaseEntry struct {
+	Certification string `json:"certification"`
+}
+
+// tvContentRatingsResponse from /tv/{id}/content_ratings.
+type tvContentRatingsResponse struct {
+	Results []tvRatingCountry `json:"results"`
+}
+type tvRatingCountry struct {
+	Iso3166_1 string `json:"iso_3166_1"`
+	Rating    string `json:"rating"`
+}
+
+// GetMovieCertification returns the US certification for a movie (G, PG, PG-13, R, etc.).
+func (c *Client) GetMovieCertification(tmdbID int) string {
+	var resp movieReleaseDatesResponse
+	if err := c.get(fmt.Sprintf("/movie/%d/release_dates", tmdbID), nil, &resp); err != nil {
+		return ""
+	}
+	for _, country := range resp.Results {
+		if country.Iso3166_1 == "US" {
+			for _, entry := range country.ReleaseDates {
+				if entry.Certification != "" {
+					return entry.Certification
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// GetTVCertification returns the US content rating for a TV show (TV-Y, TV-PG, etc.).
+func (c *Client) GetTVCertification(tmdbID int) string {
+	var resp tvContentRatingsResponse
+	if err := c.get(fmt.Sprintf("/tv/%d/content_ratings", tmdbID), nil, &resp); err != nil {
+		return ""
+	}
+	for _, country := range resp.Results {
+		if country.Iso3166_1 == "US" {
+			return country.Rating
+		}
+	}
+	return ""
+}
+
+// ratingIsKids returns true if the US rating is at or below the given threshold.
+// Valid thresholds: "G", "PG", "PG-13", "TV-Y", "TV-Y7", "TV-G", "TV-PG"
+func ratingIsKids(rating, max string) bool {
+	return ratingIndex(rating) <= ratingIndex(max)
+}
+
+// ratingIndex maps US content ratings to an ordinal for comparison.
+func ratingIndex(rating string) int {
+	switch rating {
+	case "TV-Y", "G":
+		return 1
+	case "TV-Y7", "PG":
+		return 2
+	case "TV-G":
+		return 3
+	case "TV-PG", "PG-13":
+		return 4
+	case "TV-14":
+		return 5
+	case "R", "TV-MA":
+		return 6
+	case "NC-17":
+		return 7
+	default:
+		if rating == "" {
+			return 0 // unrated → not kids
+		}
+		return 5 // unknown → assume adult
+	}
 }

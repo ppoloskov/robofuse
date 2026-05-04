@@ -45,9 +45,10 @@ type TrackingEntry struct {
 	DownloadURL string `json:"download_url,omitempty"`
 	LastChecked string `json:"last_checked,omitempty"`
 	// TMDB fields (from file_tracking.json)
-	TMDBTitle string `json:"tmdb_title,omitempty"`
-	TMDBYear  int    `json:"tmdb_year,omitempty"`
-	TMDBType  string `json:"tmdb_type,omitempty"`
+	TMDBTitle         string `json:"tmdb_title,omitempty"`
+	TMDBYear          int    `json:"tmdb_year,omitempty"`
+	TMDBType          string `json:"tmdb_type,omitempty"`
+	TMDBContentRating string `json:"tmdb_content_rating,omitempty"`
 }
 
 // Organizer handles media file organization.
@@ -62,6 +63,9 @@ type Organizer struct {
 	db            map[string]FileEntry
 	adultPatterns []string
 	folderRules   []FolderRule
+	kidsMaxRating string
+	kidsFolder    string
+	animeFolder   string
 }
 
 // Config holds organizer configuration.
@@ -73,6 +77,9 @@ type Config struct {
 	CacheDir      string
 	AdultPatterns []string
 	FolderRules   []FolderRule
+	KidsMaxRating string
+	KidsFolder    string
+	AnimeFolder   string
 	Logger        zerolog.Logger
 }
 
@@ -119,6 +126,9 @@ func New(cfg Config) *Organizer {
 		db:            make(map[string]FileEntry),
 		adultPatterns: cfg.AdultPatterns,
 		folderRules:   cfg.FolderRules,
+		kidsMaxRating: cfg.KidsMaxRating,
+		kidsFolder:    cfg.KidsFolder,
+		animeFolder:   cfg.AnimeFolder,
 	}
 }
 
@@ -334,12 +344,37 @@ func (o *Organizer) getContentTypeAndPath(parsed, parentParsed *ptt.TorrentInfo,
 		}
 	}
 
+	// Kids content routing: if rating qualifies, override to kids folder
+	if o.kidsMaxRating != "" && meta != nil && meta.TMDBContentRating != "" {
+		if ratingIsKids(meta.TMDBContentRating, o.kidsMaxRating) {
+			baseFolder := o.kidsFolder
+			if baseFolder == "" {
+				baseFolder = "Kids"
+			}
+			// Build path under kids folder
+			cleanTitle := cleanFilename(title)
+			if year > 0 {
+				cleanTitle = cleanFilename(fmt.Sprintf("%s (%d)", title, year))
+			}
+			ext := realSTRMExt(filename)
+			idSuffix := ""
+			if rdID != "" {
+				idSuffix = fmt.Sprintf(" [%s]", rdID)
+			}
+			baseName := strings.TrimSuffix(filepath.Base(filename), filepath.Ext(filename))
+			cleanFile := cleanFilename(fmt.Sprintf("%s%s%s", baseName, idSuffix, ext))
+			return "kids", filepath.Join(baseFolder, cleanTitle, cleanFile)
+		}
+	}
+
 	// Determine base folder
 	var baseFolder string
-	switch finalType {
-	case "anime":
+	switch {
+	case finalType == "anime" && o.animeFolder != "":
+		baseFolder = o.animeFolder
+	case finalType == "anime":
 		baseFolder = "Anime"
-	case "series":
+	case finalType == "series":
 		baseFolder = "Series"
 	default:
 		baseFolder = "Movies"
@@ -613,4 +648,18 @@ func realSTRMExt(filename string) string {
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// ratingIsKids returns true if the rating is at/below the max.
+func ratingIsKids(rating, max string) bool {
+	idx := map[string]int{
+		"TV-Y": 1, "G": 1,
+		"TV-Y7": 2, "PG": 2,
+		"TV-G": 3,
+		"TV-PG": 4, "PG-13": 4,
+		"TV-14": 5,
+		"R": 6, "TV-MA": 6,
+		"NC-17": 7,
+	}
+	return idx[rating] <= idx[max]
 }

@@ -50,6 +50,7 @@ type FileTracking struct {
 	TMDBBackdrop  string   `json:"tmdb_backdrop,omitempty"`
 	TMDBRating    float64  `json:"tmdb_rating,omitempty"`
 	TMDBGenres    []string `json:"tmdb_genres,omitempty"`
+	TMDBContentRating string `json:"tmdb_content_rating,omitempty"` // US certification (G, PG, TV-Y, etc.)
 	IMDBID        string   `json:"imdb_id,omitempty"`        // IMDB ID (movies only)
 	TMDBNFOGenerated bool  `json:"tmdb_nfo_generated,omitempty"`
 }
@@ -267,6 +268,7 @@ func (s *Service) SetTMDBMatch(relativePath string, match *tmdb.MatchResult) {
 	entry.TMDBBackdrop = match.BackdropPath
 	entry.TMDBRating = match.VoteAverage
 	entry.TMDBGenres = match.Genres
+	entry.TMDBContentRating = match.ContentRating
 	entry.IMDBID = match.IMDBID
 }
 

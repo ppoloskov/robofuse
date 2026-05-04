@@ -55,6 +55,11 @@ type Config struct {
 	MovieNameTemplate   string `json:"movie_name_template"`   // e.g. "{title} ({year}) [{resolution} {hdr}]"
 	EpisodeNameTemplate string `json:"episode_name_template"` // e.g. "{title} - S{season:02d}E{episode:02d}"
 
+	// Content routing
+	KidsMaxRating string `json:"kids_max_rating"` // e.g. "PG", "TV-Y7" — content at/below this goes to kids folder
+	KidsFolder    string `json:"kids_folder"`     // target folder for kids content (default "Kids")
+	AnimeFolder   string `json:"anime_folder"`    // target folder for anime (default "Anime")
+
 	// Internal
 	Path string `json:"-"` // Config file path
 }

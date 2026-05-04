@@ -971,6 +971,15 @@ func (s *Service) matchTMDB(candidates []realdebrid.STRMCandidate) {
 			continue
 		}
 
+		// Fetch content rating for kids folder routing
+		if s.config.KidsMaxRating != "" && match != nil {
+			if match.Type == "movie" {
+				match.ContentRating = s.tmdbClient.GetMovieCertification(match.TMDBID)
+			} else {
+				match.ContentRating = s.tmdbClient.GetTVCertification(match.TMDBID)
+			}
+		}
+
 		// Apply match to all candidates in this group
 		for _, c := range g.candidates {
 			path := s.strmService.BuildSTRMPath(c.TorrentFolder, c.Filename)
@@ -1105,6 +1114,9 @@ func (s *Service) runOrganizer() OrganizerResult {
 		CacheDir:      s.config.CacheDir,
 		AdultPatterns: s.config.AdultPatterns,
 		FolderRules:   convertFolderRules(s.config.FolderRules),
+		KidsMaxRating: s.config.KidsMaxRating,
+		KidsFolder:    s.config.KidsFolder,
+		AnimeFolder:   s.config.AnimeFolder,
 		Logger:        s.logger,
 	})
 
