@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -48,6 +49,9 @@ type Service struct {
 // New creates a new sync service
 func New(cfg *config.Config) *Service {
 	rd := realdebrid.New(cfg)
+
+	// Ensure cache directory exists
+	os.MkdirAll(cfg.CacheDir, 0755)
 
 	svc := &Service{
 		rd:            rd,
@@ -801,8 +805,8 @@ func (s *Service) fetchMediaInfos(candidates []realdebrid.STRMCandidate) {
 			s.strmService.SetRDInfo(path, info)
 			mu.Lock()
 			fetched++
-			// Periodic save during long fetch phases
-			if fetched%50 == 0 {
+			// Save early and often — first save creates cache dir
+			if fetched == 1 || fetched%25 == 0 {
 				s.strmService.SaveTracking()
 			}
 			mu.Unlock()
