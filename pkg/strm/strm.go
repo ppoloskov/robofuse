@@ -152,6 +152,11 @@ func (s *Service) Sync(candidates []realdebrid.STRMCandidate, dryRun bool) (*Syn
 	// expected or recognised as a rename). Anything left over is a true orphan.
 	accountedExisting := make(map[string]bool)
 
+	// Periodic save counter — flush tracking every N operations so
+	// interrupted runs can resume from where they left off.
+	opsSinceSave := 0
+	const saveInterval = 50
+
 	// Step 3: Process candidates (add/update/rename)
 	for path, url := range expected {
 		candidate := candidateMap[path]
@@ -213,6 +218,15 @@ func (s *Service) Sync(candidates []realdebrid.STRMCandidate, dryRun bool) (*Syn
 				s.tracking.Track(path, url, "", "")
 			}
 			s.logger.Debug().Str("path", path).Msg("Created STRM (legacy, no link)")
+		}
+
+		// Periodic save — flush tracking every N files
+		opsSinceSave++
+		if opsSinceSave >= saveInterval && !dryRun {
+			if err := s.tracking.Save(); err != nil {
+				s.logger.Warn().Err(err).Msg("Failed to save tracking incrementally")
+			}
+			opsSinceSave = 0
 		}
 	}
 
