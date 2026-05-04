@@ -132,6 +132,12 @@ func Load(configPath string) (*Config, error) {
 		return nil, fmt.Errorf("config file not found in any of: %v", paths)
 	}
 
+	// Warn if config file is world-readable (contains API tokens)
+	if info, err := os.Stat(configFile); err == nil && info.Mode()&0044 != 0 {
+		fmt.Fprintf(os.Stderr, "WARNING: config file %s has group/other read permissions. "+
+			"Run: chmod 600 %s\n", configFile, configFile)
+	}
+
 	data, err := os.ReadFile(configFile)
 	if err != nil {
 		return nil, fmt.Errorf("reading config file: %w", err)

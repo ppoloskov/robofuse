@@ -375,7 +375,7 @@ func (s *Service) writeSTRM(relativePath, url, link, torrentID string) error {
 	}
 	content += "\n"
 
-	return os.WriteFile(fullPath, []byte(content), 0644)
+	return os.WriteFile(fullPath, []byte(content), 0600)
 }
 
 // writeNFO creates a Kodi-compatible .nfo file alongside the .strm file.
