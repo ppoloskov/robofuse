@@ -222,11 +222,13 @@ func (s *Service) Run(dryRun bool) (*RunResult, error) {
 
 	// Step 7b: Fetch RD media info for classification (async, bounded)
 	if !dryRun {
+		s.logger.Info().Msg("Phase: fetching RD media info (may take up to 60s)")
 		s.fetchMediaInfos(s.candidates)
 	}
 
 	// Step 7c: Match against TMDB for official titles and metadata
 	if !dryRun && s.tmdbClient != nil {
+		s.logger.Info().Msg("Phase: matching against TMDB")
 		s.matchTMDB(s.candidates)
 	}
 
@@ -234,6 +236,7 @@ func (s *Service) Run(dryRun bool) (*RunResult, error) {
 	s.applyNameTemplates(s.candidates)
 
 	// Step 8: Sync STRM files
+	s.logger.Info().Msg("Phase: syncing STRM files")
 	s.logger.Debug().Msg("Syncing STRM files...")
 	strmResult, err := s.strmService.Sync(s.candidates, dryRun)
 	if err != nil {
@@ -798,6 +801,10 @@ func (s *Service) fetchMediaInfos(candidates []realdebrid.STRMCandidate) {
 			s.strmService.SetRDInfo(path, info)
 			mu.Lock()
 			fetched++
+			// Periodic save during long fetch phases
+			if fetched%50 == 0 {
+				s.strmService.SaveTracking()
+			}
 			mu.Unlock()
 		}()
 	}

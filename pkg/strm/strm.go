@@ -692,6 +692,13 @@ func (s *Service) SetTMDBMatch(relativePath string, match *tmdb.MatchResult) {
 	s.tracking.SetTMDBMatch(relativePath, match)
 }
 
+// SaveTracking persists the tracking database to disk.
+func (s *Service) SaveTracking() {
+	if err := s.tracking.Save(); err != nil {
+		s.logger.Warn().Err(err).Msg("Failed to save tracking")
+	}
+}
+
 // sanitizeFilename makes a filename safe for the filesystem with enhanced cleaning
 func sanitizeFilename(name string) string {
 	// Step 1: Multi-pass URL decoding (up to 3 times)
