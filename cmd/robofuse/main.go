@@ -3,12 +3,15 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/robofuse/robofuse/internal/config"
+	"github.com/robofuse/robofuse/internal/health"
 	"github.com/robofuse/robofuse/internal/logger"
+	"github.com/robofuse/robofuse/internal/metrics"
 	"github.com/robofuse/robofuse/pkg/sync"
 	"github.com/spf13/cobra"
 )
@@ -32,6 +35,13 @@ with media players like Infuse, Jellyfin, and Emby.`,
 			if logLevel != "" {
 				logger.SetLogLevel(logLevel)
 			}
+			// Start HTTP server for health checks and metrics
+			go func() {
+				mux := http.NewServeMux()
+				mux.Handle("/healthz", health.Handler())
+				mux.Handle("/metrics", metrics.Handler())
+				http.ListenAndServe(":9090", mux)
+			}()
 			return nil
 		},
 	}

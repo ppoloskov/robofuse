@@ -320,6 +320,8 @@ func (s *Service) Load() error {
 		if ft.Link != "" {
 			s.linkIndex[ft.Link] = path
 		}
+		// Clear RDMediaFailed on restart — endpoint may have recovered
+		ft.RDMediaFailed = false
 	}
 
 	s.logger.Debug().Int("count", len(s.data)).Msg("Loaded tracking data")

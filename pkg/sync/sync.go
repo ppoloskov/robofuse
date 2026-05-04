@@ -15,6 +15,7 @@ import (
 	"github.com/robofuse/robofuse/internal/config"
 	"github.com/robofuse/robofuse/internal/console"
 	"github.com/robofuse/robofuse/internal/logger"
+	"github.com/robofuse/robofuse/internal/metrics"
 	"github.com/robofuse/robofuse/internal/request"
 	"github.com/robofuse/robofuse/pkg/organizer"
 	"github.com/robofuse/robofuse/pkg/namefmt"
@@ -253,6 +254,7 @@ func (s *Service) Run(dryRun bool) (*RunResult, error) {
 	}
 
 	result.Duration = time.Since(startTime)
+	metrics.CycleDuration.Observe(result.Duration.Seconds())
 
 	s.logger.Debug().
 		Int("strm_added", result.STRMAdded).

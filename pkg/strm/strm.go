@@ -15,6 +15,7 @@ import (
 	ptt "github.com/itsrenoria/ptt-go"
 	"github.com/robofuse/robofuse/internal/config"
 	"github.com/robofuse/robofuse/internal/logger"
+	"github.com/robofuse/robofuse/pkg/classify"
 	"github.com/robofuse/robofuse/pkg/nfo"
 	"github.com/robofuse/robofuse/pkg/probe"
 	"github.com/robofuse/robofuse/pkg/realdebrid"
@@ -389,33 +390,31 @@ func (s *Service) writeSTRM(relativePath, url, link, torrentID string) error {
 func (s *Service) writeNFO(strmRelPath string, candidate realdebrid.STRMCandidate) {
 	fullPath := filepath.Join(s.config.OutputDir, strmRelPath)
 
-	// Parse filenames with PTT for fallback
-	filenameNoExt := strings.TrimSuffix(candidate.Filename, filepath.Ext(candidate.Filename))
-	parsed := ptt.Parse(filenameNoExt)
-	folderName := filepath.Base(candidate.TorrentFolder)
-	folderParsed := ptt.Parse(folderName)
-
 	data := &nfo.Data{
 		FileSize: candidate.Filesize,
 	}
 
-	// Check tracking for RD media info (pre-fetched by sync.Run)
+	// Check tracking for pre-fetched metadata
 	ft, hasTracking := s.tracking.Get(strmRelPath)
 
-	// --- Classification pipeline ---
+	// Classify using shared function (single source of truth)
+	rdType := ""
+	tmdbType := ""
+	if hasTracking {
+		rdType = ft.RDType
+		tmdbType = ft.TMDBType
+	}
+	cls := classify.Classify(candidate.Filename, candidate.TorrentFolder, rdType, tmdbType)
+
+	data.Type = cls.Type
+	data.Title = cls.Title
+	data.ShowTitle = cls.ShowTitle
+	data.Year = cls.Year
+	data.Season = cls.Season
+	data.Episode = cls.Episode
+
+	// Enrich with RD data
 	if hasTracking && ft.RDType != "" {
-		// Priority 1: RD mediaInfos classification
-		switch ft.RDType {
-		case "show":
-			data.Type = "episode"
-			data.ShowTitle = firstNonEmpty(folderParsed.Title, folderName)
-			data.Title = firstNonEmpty(parsed.Title, candidate.Filename)
-			data.Season = ft.RDSeason
-			data.Episode = ft.RDEpisode
-		default:
-			data.Type = "movie"
-			data.Title = firstNonEmpty(parsed.Title, folderParsed.Title, filenameNoExt)
-		}
 		if ft.RDYear != "" {
 			if y, err := strconv.Atoi(ft.RDYear); err == nil {
 				data.Year = y
@@ -424,49 +423,7 @@ func (s *Service) writeNFO(strmRelPath string, candidate realdebrid.STRMCandidat
 		data.DurationSeconds = ft.RDDuration
 		data.PosterPath = ft.RDPosterPath
 		data.BackdropPath = ft.RDBackdropPath
-	} else {
-		// Priority 2: PTT parsing
-		isSeries := len(parsed.Seasons) > 0 || len(parsed.Episodes) > 0 || parsed.Anime
-		isSeriesFolder := len(folderParsed.Seasons) > 0 || len(folderParsed.Episodes) > 0 || folderParsed.Anime
-
-		if isSeriesFolder {
-			data.Type = "episode"
-			data.ShowTitle = firstNonEmpty(folderParsed.Title, folderName)
-			data.Year = firstNonZero(folderParsed.Year, parsed.Year)
-			if len(parsed.Seasons) > 0 {
-				data.Season = parsed.Seasons[0]
-			} else if len(folderParsed.Seasons) > 0 {
-				data.Season = folderParsed.Seasons[0]
-			}
-			if len(parsed.Episodes) > 0 {
-				data.Episode = parsed.Episodes[0]
-			}
-			data.Title = firstNonEmpty(parsed.Title, candidate.Filename)
-		} else if isSeries {
-			data.Type = "episode"
-			data.ShowTitle = firstNonEmpty(parsed.Title, folderName)
-			data.Year = parsed.Year
-			if len(parsed.Seasons) > 0 {
-				data.Season = parsed.Seasons[0]
-			}
-			if len(parsed.Episodes) > 0 {
-				data.Episode = parsed.Episodes[0]
-			}
-			data.Title = firstNonEmpty(parsed.Title, candidate.Filename)
-		} else {
-			data.Type = "movie"
-			data.Title = firstNonEmpty(parsed.Title, folderParsed.Title, filenameNoExt)
-			data.Year = firstNonZero(parsed.Year, folderParsed.Year)
-		}
-
-		// Priority 3: Custom rules (override PTT when ambiguous)
-		// Rule: if RD duration > 80 min and no series markers → movie
-		if data.Type == "movie" && hasTracking && ft.RDDuration > 4800 {
-			// Confirmed movie by duration
-		}
 	}
-
-	// Include ffprobe metadata if available
 	if hasTracking && ft.Media != nil {
 		data.Media = ft.Media
 	}
