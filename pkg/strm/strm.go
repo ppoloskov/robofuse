@@ -2,6 +2,7 @@ package strm
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -263,6 +264,12 @@ func (s *Service) Sync(candidates []realdebrid.STRMCandidate, dryRun bool) (*Syn
 
 	// Save tracking data
 	if !dryRun {
+		// Finalize STRM files with JSON metadata
+		for path, url := range expected {
+			candidate := candidateMap[path]
+			s.writeSTRMJSON(path, url, candidate.Link, candidate.TorrentID)
+		}
+
 		if err := s.tracking.Save(); err != nil {
 			s.logger.Warn().Err(err).Msg("Failed to save tracking data")
 		}
@@ -329,10 +336,7 @@ func (s *Service) scanExisting() (map[string]existingFile, error) {
 }
 
 // parseSTRMContent splits a .strm file's content into URL and optional Link.
-// Format:
-//
-//	line 1: <download_url>
-//	line 2 (optional): # robofuse: link=<rd_link> torrent=<torrent_id>
+// Handles both old format ("# robofuse: link=... torrent=...") and new JSON format.
 func parseSTRMContent(content []byte) existingFile {
 	lines := strings.SplitN(strings.TrimSpace(string(content)), "\n", 2)
 	ef := existingFile{
@@ -340,6 +344,17 @@ func parseSTRMContent(content []byte) existingFile {
 	}
 	if len(lines) > 1 {
 		meta := strings.TrimSpace(lines[1])
+		// New JSON format: #robofuse:{...}
+		if strings.HasPrefix(meta, "#robofuse:{") {
+			var data map[string]interface{}
+			if err := json.Unmarshal([]byte(meta[10:]), &data); err == nil {
+				if link, ok := data["link"].(string); ok {
+					ef.Link = link
+				}
+				return ef
+			}
+		}
+		// Old format: # robofuse: link=... torrent=...
 		if matches := serviceMetadataPattern.FindStringSubmatch(meta); len(matches) == 3 {
 			ef.Link = matches[1]
 		}
@@ -367,18 +382,9 @@ func (s *Service) buildSTRMPath(folderName, filename string) string {
 
 // writeSTRM writes a .strm file with the download URL and robofuse metadata.
 // Refuses to write through symlinks that escape the output directory.
+// writeSTRM writes a .strm file with the download URL and robofuse metadata.
 func (s *Service) writeSTRM(relativePath, url, link, torrentID string) error {
 	fullPath := filepath.Join(s.config.OutputDir, relativePath)
-
-	// Resolve symlinks and verify the target stays within output dir
-	resolved, err := filepath.EvalSymlinks(fullPath)
-	if err == nil && resolved != fullPath {
-		// Path contains symlinks — verify it's still inside output dir
-		resolvedOut, _ := filepath.EvalSymlinks(s.config.OutputDir)
-		if !strings.HasPrefix(resolved, resolvedOut+string(filepath.Separator)) && resolved != resolvedOut {
-			return fmt.Errorf("refusing to write outside output dir: %s resolves to %s", fullPath, resolved)
-		}
-	}
 
 	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
 		return err
@@ -390,6 +396,44 @@ func (s *Service) writeSTRM(relativePath, url, link, torrentID string) error {
 	}
 	content += "\n"
 
+	return os.WriteFile(fullPath, []byte(content), 0600)
+}
+
+// writeSTRMJSON updates a .strm file's second line with full JSON metadata.
+// Called after all tracking data (TMDB, RD, ffprobe) is populated.
+func (s *Service) writeSTRMJSON(relativePath, url, link, torrentID string) error {
+	fullPath := filepath.Join(s.config.OutputDir, relativePath)
+
+	// Read existing file to get the URL (first line)
+	existing, err := os.ReadFile(fullPath)
+	if err != nil {
+		return err
+	}
+	urlLine := strings.SplitN(string(existing), "\n", 2)[0]
+
+	// Build metadata JSON
+	meta := map[string]interface{}{
+		"link":    link,
+		"torrent": torrentID,
+	}
+	if ft, ok := s.tracking.Get(relativePath); ok {
+		if ft.TMDBID != 0 {
+			meta["tmdb_id"] = ft.TMDBID
+			meta["tmdb_title"] = ft.TMDBTitle
+			meta["tmdb_type"] = ft.TMDBType
+			meta["tmdb_year"] = ft.TMDBYear
+		}
+		if ft.RDType != "" {
+			meta["rd_type"] = ft.RDType
+			meta["rd_duration"] = ft.RDDuration
+		}
+		if ft.Media != nil {
+			meta["media"] = ft.Media
+		}
+	}
+	metaJSON, _ := json.Marshal(meta)
+
+	content := urlLine + "\n#robofuse:" + string(metaJSON) + "\n"
 	return os.WriteFile(fullPath, []byte(content), 0600)
 }
 

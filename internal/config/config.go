@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -66,7 +67,7 @@ type Config struct {
 
 // FolderRule defines a custom routing rule for content placement.
 type FolderRule struct {
-	Pattern  string `json:"pattern"`   // case-insensitive substring match on torrent folder
+	Pattern  string `json:"pattern"`   // substring or regex match on torrent folder (use ~ prefix for regex)
 	Target   string `json:"target"`    // destination folder (e.g. "X", "Anime", "Documentary")
 	SkipTMDB bool   `json:"skip_tmdb"` // skip TMDB matching for this folder
 }
@@ -208,6 +209,7 @@ func SetInstance(cfg *Config) {
 }
 
 // MatchFolderRule returns the first matching FolderRule for a folder name, or nil.
+// Patterns prefixed with ~ are treated as regex; otherwise case-insensitive substring.
 func (c *Config) MatchFolderRule(folderName string) *FolderRule {
 	lower := strings.ToLower(folderName)
 	for i := range c.FolderRules {
@@ -215,7 +217,12 @@ func (c *Config) MatchFolderRule(folderName string) *FolderRule {
 		if r.Pattern == "" {
 			continue
 		}
-		if strings.Contains(lower, strings.ToLower(r.Pattern)) {
+		if strings.HasPrefix(r.Pattern, "~") {
+			re, err := regexp.Compile(r.Pattern[1:])
+			if err == nil && re.MatchString(folderName) {
+				return r
+			}
+		} else if strings.Contains(lower, strings.ToLower(r.Pattern)) {
 			return r
 		}
 	}

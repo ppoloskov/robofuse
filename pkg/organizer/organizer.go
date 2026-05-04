@@ -451,7 +451,15 @@ func (o *Organizer) isAdultPath(sourceRelPath string) bool {
 		}
 	}
 	for _, r := range o.folderRules {
-		if r.Pattern != "" && strings.Contains(folder, strings.ToLower(r.Pattern)) {
+		if r.Pattern == "" {
+			continue
+		}
+		if strings.HasPrefix(r.Pattern, "~") {
+			re, err := regexp.Compile(r.Pattern[1:])
+			if err == nil && re.MatchString(filepath.Dir(sourceRelPath)) {
+				return true
+			}
+		} else if strings.Contains(folder, strings.ToLower(r.Pattern)) {
 			return true
 		}
 	}

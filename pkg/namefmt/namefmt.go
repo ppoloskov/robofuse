@@ -58,6 +58,9 @@ func expand(tmpl string, v Values) string {
 		"{extension}":      v.Extension,
 		"{audio_langs}":    strings.Join(v.AudioLangs, ","),
 		"{sub_langs}":      strings.Join(v.SubLangs, ","),
+		"{year}":           fmt.Sprintf("%d", v.Year),
+		"{season}":         fmt.Sprintf("%d", v.Season),
+		"{episode}":        fmt.Sprintf("%d", v.Episode),
 	}
 
 	result := tmpl
