@@ -17,6 +17,7 @@ import (
 // GetTorrents fetches all torrents with pagination (limit=100 to ensure links are returned)
 // Returns: downloaded torrents, dead torrents, error
 func (c *Client) GetTorrents() ([]*Torrent, []*Torrent, error) {
+	c.logger.Info().Msg("Fetching torrents...")
 	c.logger.Debug().Msg("Fetching all torrents with pagination...")
 
 	var allTorrents []*Torrent
@@ -104,7 +105,8 @@ func (c *Client) GetTorrents() ([]*Torrent, []*Torrent, error) {
 // This provides better folder names (e.g. "Miami.Vice.S01.1080p" instead of
 // "Сезон 1 (1984-1985)").
 func (c *Client) PopulateOriginalFilenames(torrents []*Torrent) {
-	for _, t := range torrents {
+	c.logger.Info().Int("count", len(torrents)).Msg("Fetching original torrent filenames...")
+	for i, t := range torrents {
 		if t.OriginalFilename != "" {
 			continue
 		}
@@ -115,6 +117,9 @@ func (c *Client) PopulateOriginalFilenames(torrents []*Torrent) {
 		}
 		if info.OriginalFilename != "" {
 			t.OriginalFilename = info.OriginalFilename
+		}
+		if (i+1)%10 == 0 || i == len(torrents)-1 {
+			c.logger.Debug().Int("done", i+1).Int("total", len(torrents)).Msg("Original filenames progress")
 		}
 	}
 }
