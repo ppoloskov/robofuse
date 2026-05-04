@@ -24,6 +24,7 @@ import (
 	"github.com/robofuse/robofuse/pkg/retry"
 	"github.com/robofuse/robofuse/pkg/strm"
 	"github.com/robofuse/robofuse/pkg/tmdb"
+	"github.com/robofuse/robofuse/pkg/tvmaze"
 	"github.com/rs/zerolog"
 )
 
@@ -37,7 +38,8 @@ type Service struct {
 	retryQueue    *retry.Queue
 	config        *config.Config
 	logger        zerolog.Logger
-	tmdbClient    *tmdb.Client // nil if TMDB not configured
+	tmdbClient    *tmdb.Client    // nil if TMDB not configured
+	tvmazeClient  *tvmaze.Client  // always present (no API key needed)
 	// Reusable allocations for watch mode
 	downloadMap map[string]*realdebrid.Download
 	candidates  []realdebrid.STRMCandidate
@@ -56,6 +58,7 @@ func New(cfg *config.Config) *Service {
 		logger:        logger.New("sync"),
 		downloadMap:   make(map[string]*realdebrid.Download),
 		candidates:    make([]realdebrid.STRMCandidate, 0, 1024),
+		tvmazeClient:  tvmaze.New(),
 	}
 
 	if cfg.TMDBAPIKey != "" {
@@ -964,13 +967,35 @@ func (s *Service) matchTMDB(candidates []realdebrid.STRMCandidate) {
 			continue
 		}
 		if match == nil {
-			s.logger.Warn().
-				Str("search_title", searchTitle).
-				Str("type", mediaType).
-				Int("year", searchYear).
-				Msg("TMDB no match found")
-			unmatched += len(g.candidates)
-			continue
+			// Fallback: try TVMaze for shows when TMDB doesn't match
+			if mediaType == "show" && s.tvmazeClient != nil {
+				if tvMatch, err := s.tvmazeClient.SearchShow(searchTitle, searchYear); err == nil && tvMatch != nil {
+					match = &tmdb.MatchResult{
+						TMDBID:  tvMatch.ID,
+						Title:   tvMatch.Name,
+						Type:    "show",
+						Year:    tvMatch.Year,
+						Overview: tvMatch.Summary,
+					}
+					if tvMatch.Image != "" {
+						match.PosterPath = tvMatch.Image
+					}
+					s.logger.Info().
+						Str("search_title", searchTitle).
+						Str("tvmaze_title", tvMatch.Name).
+						Msg("TMDB no match — TVMaze fallback found")
+				}
+			}
+
+			if match == nil {
+				s.logger.Warn().
+					Str("search_title", searchTitle).
+					Str("type", mediaType).
+					Int("year", searchYear).
+					Msg("TMDB no match found")
+				unmatched += len(g.candidates)
+				continue
+			}
 		}
 
 		// Fetch content rating for kids folder routing (only if not already cached)
