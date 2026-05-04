@@ -151,6 +151,13 @@ Edit `config.json` to customize robofuse. All settings can also be overridden vi
 | `enable_ffprobe` | bool | `false` | Run `ffprobe` on download URLs to capture video/audio stream metadata (requires `ffprobe` installed). |
 | `ffprobe_path` | string | `"ffprobe"` | Path to the `ffprobe` binary. |
 | `ffprobe_timeout` | int | `15` | Timeout in seconds for each ffprobe call. |
+| `tmdb_api_key` | string | — | TheMovieDB API v3 key for metadata enrichment, renaming, and poster/backdrop images. Get one at themoviedb.org. |
+| `movie_name_template` | string | `"{title} ({year})"` | Filename template for movies. See [Filename Templates](#filename-templates). |
+| `episode_name_template` | string | `"{title} S{season:02d}E{episode:02d}"` | Filename template for TV episodes. |
+| `folder_rules` | array | `[]` | Custom routing rules. See [Folder Rules](#folder-rules). |
+| `adult_patterns` | array | `[]` | Deprecated. Use `folder_rules` with `"target": "X"` and `"skip_tmdb": true`. |
+| `title_overrides` | object | `{}` | Manual torrent folder → TMDB search title mappings. See [Title Overrides](#title-overrides). |
+| `exclude_keywords_file` | string | — | Path to a text file with one keyword per line (case-insensitive). Torrents matching any keyword are skipped. |
 
 > [!IMPORTANT]
 > The default concurrency and rate limits are tuned for stability. With large libraries (800+ files), raising `concurrent_requests` or `general_rate_limit` can trigger Real-Debrid's server-side rate limiting (503 errors) and cause a retry cascade. Start low and increase gradually.
@@ -186,6 +193,9 @@ Every config key can be set via an environment variable with the `ROBOFUSE_` pre
 | `ROBOFUSE_ENABLE_FFPROBE` | `enable_ffprobe` |
 | `ROBOFUSE_FFPROBE_PATH` | `ffprobe_path` |
 | `ROBOFUSE_FFPROBE_TIMEOUT` | `ffprobe_timeout` |
+| `ROBOFUSE_TMDB_API_KEY` | `tmdb_api_key` |
+| `ROBOFUSE_MOVIE_NAME_TEMPLATE` | `movie_name_template` |
+| `ROBOFUSE_EPISODE_NAME_TEMPLATE` | `episode_name_template` |
 
 Bool values accept `true`, `false`, `1`, `0` (per `strconv.ParseBool`). Int values must be valid decimal integers. Strings are used as-is.
 
@@ -201,6 +211,75 @@ ROBOFUSE_CONFIG=/etc/robofuse/config.json ./robofuse run
 # Docker: pass env vars inline
 docker run -e ROBOFUSE_TOKEN=abc123 -e ROBOFUSE_CONCURRENT_REQUESTS=5 ...
 ```
+
+<a id="filename-templates"></a>
+### Filename Templates
+
+Customize how STRM files are named using metadata placeholders. Templates are applied after TMDB matching and ffprobe analysis.
+
+**Movie template** (`movie_name_template`):
+```
+"{title} ({year}) [{resolution} {hdr} {bitrate}] [{audio_langs}][{sub_langs}]"
+```
+
+**Episode template** (`episode_name_template`):
+```
+"{title} - S{season:02d}E{episode:02d} - {episode_title} [{resolution} {hdr}] [{audio_langs}][{sub_langs}]"
+```
+
+**Available placeholders:**
+
+| Placeholder | Source | Example |
+|-------------|--------|---------|
+| `{title}` | TMDB → PTT | `Arcane` |
+| `{original_title}` | TMDB | `Arcane` |
+| `{year}` | TMDB → PTT | `2024` |
+| `{season}` | PTT | `2` |
+| `{season:02d}` | PTT (zero-padded) | `02` |
+| `{episode}` | PTT | `1` |
+| `{episode:02d}` | PTT (zero-padded) | `01` |
+| `{resolution}` | ffprobe | `2160p`, `1080p` |
+| `{hdr}` | ffprobe | `Dolby Vision`, `HDR` |
+| `{bitrate}` | ffprobe | `17 Mbps` |
+| `{codec}` | ffprobe | `HEVC`, `AVC` |
+| `{audio_codec}` | ffprobe | `DDP5.1` |
+| `{audio_langs}` | ffprobe | `EN,RU` |
+| `{sub_langs}` | — | *not yet populated* |
+| `{extension}` | original file | `.mkv` |
+
+Leave templates empty (or omit the keys) to keep the default naming.
+
+<a id="folder-rules"></a>
+### Folder Rules
+
+Route torrents to custom folders based on name patterns. Each rule has:
+- `pattern` — case-insensitive substring match on the torrent folder name
+- `target` — destination folder (e.g. `"X"`, `"Anime"`, `"Documentary"`)
+- `skip_tmdb` — skip TMDB matching for this content
+
+```json
+"folder_rules": [
+  {"pattern": "Viv Thomas", "target": "X", "skip_tmdb": true},
+  {"pattern": "Tushy",      "target": "X", "skip_tmdb": true},
+  {"pattern": "Anime",      "target": "Anime"}
+]
+```
+
+Files matching a rule go to `organized_dir/<target>/` with their original folder name preserved (no TMDB renaming).
+
+<a id="title-overrides"></a>
+### Title Overrides
+
+Manual mappings for torrents whose folder name doesn't contain the show title (e.g. season-only folders like `"Сезон 1 (1984-1985)"`).
+
+```json
+"title_overrides": {
+  "Сезон 1 (1984-1985)": "Miami Vice",
+  "Season 1": "The Wire"
+}
+```
+
+The torrent folder name (exact match) is replaced with the override value for TMDB search. This is equivalent to Sonarr/Radarr's manual series mapping.
 
 ---
 
